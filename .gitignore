@@ -1,0 +1,17 @@
+# Dependências do Node
+node_modules/
+
+# Ambientes Python e Compilados
+venv/
+__pycache__/
+*.pyc
+
+# Banco de dados e Uploads (Dados sensíveis)
+backend/pantherflow.db
+backend/pantherflow.log
+backend/uploads/
+
+# Pastas de distribuição e empacotamento
+dist/
+build/
+*.exe
