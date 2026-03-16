@@ -1,17 +1,8 @@
-# Dependências do Node
-node_modules/
-
-# Ambientes Python e Compilados
-venv/
+*.sam
+*.bam
+*.fastq.gz
+*.db
+pantherflow.log
 __pycache__/
-*.pyc
-
-# Banco de dados e Uploads (Dados sensíveis)
-backend/pantherflow.db
-backend/pantherflow.log
-backend/uploads/
-
-# Pastas de distribuição e empacotamento
-dist/
-build/
-*.exe
+venv/
+node_modules/

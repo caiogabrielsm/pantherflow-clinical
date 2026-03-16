@@ -213,7 +213,7 @@ export default function NewAnalysis() {
               <div className="space-y-3">
                 <label className="text-xs font-bold text-slate-500 uppercase">Protocolo</label>
                 <div className="space-y-2">
-                  {['wgs', 'exome', 'cancer'].map((p) => (
+                  {['Opção 1', 'Opção 2', 'Opção 2'].map((p) => (
                     <label key={p} className="flex items-start gap-3 p-3 bg-white border border-slate-200 rounded-xl cursor-pointer">
                       <input 
                         type="radio" 
@@ -241,7 +241,7 @@ export default function NewAnalysis() {
                   : 'bg-brand-primary hover:bg-violet-700 text-white shadow-violet-200 hover:shadow-xl'
                 }`}
             >
-              <span>{uploading ? 'PROCESSANDO...' : 'INICIAR SEQUENCIAMENTO'}</span>
+              <span>{uploading ? 'PROCESSANDO...' : 'INICIAR ANÁLISE'}</span>
               <ArrowRight size={20} />
             </button>
           </div>
