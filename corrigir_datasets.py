@@ -17,9 +17,9 @@ def gerar_arquivos():
                         # Pega os 4 primeiros campos e adiciona score e strand
                         name = parts[3] if len(parts) > 3 else "target"
                         f_out.write(f"{parts[0]}\t{parts[1]}\t{parts[2]}\t{name}\t0\t.\n")
-        print("✅ alvo_qualimap_6col.bed gerado.")
+        print(" alvo_qualimap_6col.bed gerado.")
     else:
-        print("❌ Erro: Arquivo Target_bases...bed não encontrado!")
+        print(" Erro: Arquivo Target_bases...bed não encontrado!")
 
     # 2. Gerar chr_name_map.txt
     if os.path.exists(fai_file):
@@ -30,9 +30,9 @@ def gerar_arquivos():
                     chrom = line.split('\t')[0]
                     short = chrom.replace("chr", "")
                     f_out.write(f"{chrom}\t{short}\n")
-        print("✅ chr_name_map.txt gerado.")
+        print(" chr_name_map.txt gerado.")
     else:
-        print("❌ Erro: Arquivo .fai não encontrado!")
+        print(" Erro: Arquivo .fai não encontrado!")
 
 if __name__ == "__main__":
     gerar_arquivos()
