@@ -37,5 +37,17 @@ export const api = {
   deleteAnalysis: async (id) => {
     const response = await axios.delete(`${API_URL}/analysis/${id}`);
     return response.data;
+  },
+
+  // Adicione junto com as outras funções (getHistory, getHealth, etc)
+  checkDockerHealth: async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/health/docker');
+      const data = await response.json();
+      return data.status === 'online';
+    } catch (error) {
+      // Se a própria API estiver offline, assumimos que o Docker também está inalcançável
+      return false; 
+    }
   }
 };

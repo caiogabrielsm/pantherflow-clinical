@@ -1,7 +1,7 @@
 // src/features/dashboard/ui/HardwareMonitor.jsx
 import React from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { serverStorageData } from '../shared/mockData'; // Importando dados da camada Shared!
+import { serverStorageData } from "../../../common/data/mockData";
 
 export default function HardwareMonitor({ sysHealth }) {
   return (

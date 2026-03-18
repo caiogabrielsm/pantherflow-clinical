@@ -2,8 +2,9 @@ import React from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { 
   Activity, 
-  Microscope,
-  Cpu,
+  PlusSquare,
+  List,
+  Monitor,
   ClipboardList,
   Sliders,
   Dna 
@@ -27,10 +28,11 @@ const SidebarItem = ({ to, icon: Icon, label }) => (
 
 export default function MainLayout() {
   return (
-    <div className="flex h-screen w-full bg-bg-main text-slate-800">
+    // Adicionado print:bg-white e print:h-auto para evitar cortes e fundo cinza no PDF
+    <div className="flex h-screen w-full bg-slate-50 text-slate-800 print:bg-white print:h-auto">
       
-      {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shadow-sm">
+      {/* Sidebar - print:hidden esconde o menu na impressão */}
+      <aside className="print:hidden w-64 bg-white border-r border-slate-200 flex flex-col shadow-sm">
         <div className="p-6 border-b border-slate-100 flex items-center gap-2">
           <Dna className="text-brand-accent" size={28} />
           <div>
@@ -40,10 +42,17 @@ export default function MainLayout() {
         </div>
 
         <nav className="flex-1 p-4 overflow-y-auto">
-          <SidebarItem to="/" icon={Activity} label="Dashboard" />
-          <SidebarItem to="/new-analysis" icon={Microscope} label="Nova Análise" />
-          <SidebarItem to="/monitor" icon={Cpu} label="Monitor Hardware" />
-          <SidebarItem to="/results" icon={ClipboardList} label="Laudos & Resultados" />
+          <div className="space-y-1">
+            <p className="px-3 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Principal</p>
+            <SidebarItem to="/" icon={Activity} label="Dashboard" />
+            <SidebarItem to="/new-analysis" icon={PlusSquare} label="Nova Análise" />
+            <SidebarItem to="/monitor" icon={Monitor} label="Monitoramento" />
+          </div>
+
+          <div className="space-y-1 mt-6">
+            <p className="px-3 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Dados Clínicos</p>
+            <SidebarItem to="/results" icon={ClipboardList} label="Laudos & Resultados" />
+          </div>
         </nav>
 
         <div className="p-4 border-t border-slate-100">
@@ -51,20 +60,19 @@ export default function MainLayout() {
         </div>
       </aside>
 
-      {/* Área Principal - O footer foi removido daqui */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-14 bg-white border-b border-slate-200 flex items-center px-6 justify-between">
+      {/* Área Principal - print:overflow-visible impede que o PDF corte no meio */}
+      <main className="flex-1 flex flex-col overflow-hidden print:overflow-visible">
+        
+        {/* Header - print:hidden esconde o topo na impressão */}
+        <header className="print:hidden h-14 bg-white border-b border-slate-200 flex items-center px-6 justify-between">
+           <span className="text-slate-500 text-sm font-medium">Ambiente Operacional Clínico</span>
            <span className="text-slate-500 text-sm">Bem-vindo, Dr. Geneticista</span>
         </header>
 
-        <div className="flex-1 overflow-auto p-6 relative">
+        {/* Container do Outlet - print:p-0 tira as margens da tela para aproveitar a folha */}
+        <div className="flex-1 overflow-auto p-6 relative print:p-0 print:overflow-visible">
            <Outlet />
         </div>
-
-        {/* A barra azul (footer) foi removida para simplificar a interface clínica.
-          As informações de v1.0.0 e Pantherion Dx podem ser movidas para 'Configurações' 
-          ou 'Sobre' futuramente.
-        */}
       </main>
     </div>
   );

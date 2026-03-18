@@ -1,83 +1,86 @@
-// src/features/dashboard/ui/RunsTable.jsx
 import React from 'react';
-import { Trash2, FileText, Clock } from 'lucide-react';
-import StatusBadge from '../shared/StatusBadge'; // Importando da camada Shared!
-import { api } from '../data/api'; // Importando da camada Data!
+import { Trash2, FileText } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import StatusBadge from '../../../common/ui/StatusBadge';
+import { api } from '../../../common/data/api'; // Caso você chame a deleção por aqui
 
 export default function RunsTable({ runs, onRunDeleted }) {
+  const navigate = useNavigate();
 
-  // Lógica de exclusão que usa a nossa camada de API limpa
+  // Função para deletar (mantendo a sua lógica original)
   const handleDelete = async (id) => {
-    if (!window.confirm("Apagar esta análise e destruir os arquivos no servidor?")) return;
-    try {
-      await api.deleteAnalysis(id);
-      
-      // Avisa o componente "Pai" (Dashboard) que apagou, para ele buscar a lista nova
-      if (onRunDeleted) {
-        onRunDeleted();
+    if (window.confirm("Tem certeza que deseja apagar esta análise e os arquivos do WSL2?")) {
+      try {
+        await api.deleteAnalysis(id);
+        if (onRunDeleted) onRunDeleted();
+      } catch (error) {
+        alert("Erro ao deletar análise.");
       }
-    } catch (error) {
-      console.error("Erro ao deletar:", error);
     }
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-white">
-      {/* Cabeçalho da Tabela */}
-      <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-2">
-        <h3 className="font-bold text-slate-800">Filas de Sequenciamento</h3>
-        <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-mono">
-          Total: {runs.length}
-        </span>
-      </div>
-      
-      {/* Corpo da Tabela */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-100">
+    <div className="w-full overflow-x-auto">
+      <table className="w-full text-left border-collapse">
+        <thead>
+          <tr className="bg-slate-50 border-y border-slate-200 text-slate-500 text-xs uppercase tracking-wider">
+            <th className="p-4 font-semibold">Paciente (UUID)</th>
+            <th className="p-4 font-semibold">Médico</th>
+            <th className="p-4 font-semibold">Protocolo</th>
+            <th className="p-4 font-semibold">Status</th>
+            <th className="p-4 font-semibold text-right">Ações</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {runs.length === 0 ? (
             <tr>
-              <th className="px-6 py-3 font-medium">Paciente</th>
-              <th className="px-6 py-3 font-medium">Médico</th>
-              <th className="px-6 py-3 font-medium">Protocolo</th>
-              <th className="px-6 py-3 font-medium">Início</th>
-              <th className="px-6 py-3 font-medium text-right">Status</th>
-              <th className="px-6 py-3 font-medium text-center">Ação</th>
+              <td colSpan="5" className="p-8 text-center text-slate-400">
+                Nenhuma corrida encontrada no histórico.
+              </td>
             </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50">
-            {/* Iterando sobre os dados passados pelo componente Pai */}
-            {runs.map((run) => (
+          ) : (
+            runs.map((run) => (
               <tr key={run.id} className="hover:bg-slate-50 transition-colors">
-                <td className="px-6 py-4 font-mono text-xs font-medium text-slate-600 flex items-center gap-2">
-                  <FileText size={14} className="text-slate-400" /> {run.patient_id}
+                <td className="p-4">
+                  <div className="font-medium text-slate-900">{run.patientId}</div>
+                  <div className="text-xs text-slate-400 font-mono mt-0.5">{run.patient_uuid}</div>
                 </td>
-                <td className="px-6 py-4 font-medium text-slate-900">{run.doctor}</td>
-                <td className="px-6 py-4 text-slate-500">{run.protocol}</td>
-                <td className="px-6 py-4 text-slate-400 flex items-center gap-1.5">
-                  <Clock size={14} /> {new Date(run.date).toLocaleDateString('pt-BR')}
+                <td className="p-4 text-sm text-slate-600">{run.doctor}</td>
+                <td className="p-4 text-sm text-slate-600">
+                  <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-semibold">
+                    {run.protocol}
+                  </span>
                 </td>
-                <td className="px-6 py-4 text-right">
-                  {/* Nosso mini-componente reutilizável entra aqui! */}
+                <td className="p-4">
                   <StatusBadge status={run.status} />
                 </td>
-                <td className="px-6 py-4 text-center">
-                  <button onClick={() => handleDelete(run.id)} className="text-slate-400 hover:text-red-500 transition-colors p-1">
-                    <Trash2 size={16} />
+                <td className="p-4 flex items-center justify-end gap-2">
+                  
+                  {/* O NOVO BOTÃO DE LAUDO (Só aparece se concluído) */}
+                  {run.status === 'completed' && (
+                    <button 
+                      onClick={() => navigate('/results', { state: { runData: run } })}
+                      className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors flex items-center gap-1 font-semibold text-xs"
+                      title="Ver Laudo Clínico"
+                    >
+                      <FileText size={18} />
+                      <span className="hidden sm:inline">Resultado</span>
+                    </button>
+                  )}
+
+                  <button 
+                    onClick={() => handleDelete(run.id)}
+                    className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    title="Excluir Análise"
+                  >
+                    <Trash2 size={18} />
                   </button>
                 </td>
               </tr>
-            ))}
-
-            {runs.length === 0 && (
-              <tr>
-                <td colSpan="6" className="p-8 text-center text-slate-400">
-                  Nenhum sequenciamento na fila.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            ))
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }

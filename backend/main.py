@@ -8,6 +8,7 @@ import uvicorn
 import logging
 import uuid
 import re
+import subprocess
 from pathlib import Path
 
 # --- IMPORTANDO NOSSOS MÓDULOS REFATORADOS ---
@@ -65,6 +66,22 @@ def get_system_health():
     except Exception as e:
         logger.error(f"Erro na coleta de telemetria: {e}")
         raise HTTPException(status_code=500, detail="Falha na leitura do hardware")
+
+@app.get("/api/health/docker")
+def check_docker_health():
+    """Verifica se o motor do Docker/WSL2 está respondendo"""
+    try:
+        # Tenta executar um comando básico silenciosamente
+        subprocess.run(
+            ["docker", "info"], 
+            capture_output=True, 
+            text=True, 
+            check=True
+        )
+        return {"status": "online", "message": "Docker engine ativo."}
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {"status": "offline", "message": "Docker indisponível."}
+
 
 @app.post("/api/upload")
 async def start_analysis(
