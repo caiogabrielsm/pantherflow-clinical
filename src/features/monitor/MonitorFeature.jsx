@@ -1,17 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, CheckCircle, XCircle, Terminal, Cpu } from 'lucide-react';
+import { useLocation } from 'react-router-dom'; // <--- IMPORTANTE: Pegar dados da navegação
 import { api } from '../../common/data/api';
 import HardwareMonitor from './ui/HardwareMonitor';
 
 export default function MonitorFeature() {
+  const location = useLocation();
   const [latestRun, setLatestRun] = useState(null);
   const [sysHealth, setSysHealth] = useState(null);
+  
+  // --- O NOVO RADAR DE LOGS (TEMPO REAL) ---
+  const [consoleLogs, setConsoleLogs] = useState("> Aguardando inicialização do pipeline...\n");
+  
+  // Verifica se a tela anterior passou um UUID específico para monitorar
+  const targetUuid = location.state?.activeUuid;
 
   const fetchStatus = async () => {
     try {
       const historyData = await api.getHistory();
       if (historyData && historyData.length > 0) {
-        setLatestRun(historyData[0]);
+        // Se viemos do botão "Processar", foca na análise daquele UUID. 
+        // Se não, foca na análise mais recente da fila.
+        const focusRun = targetUuid 
+          ? historyData.find(run => run.patient_uuid === targetUuid) || historyData[0]
+          : historyData[0];
+          
+        setLatestRun(focusRun);
       }
       
       const healthData = await api.getHealth();
@@ -21,11 +35,41 @@ export default function MonitorFeature() {
     }
   };
 
+  // Radar 1: Status Geral e Hardware (a cada 3s)
   useEffect(() => {
     fetchStatus();
     const interval = setInterval(fetchStatus, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [targetUuid]);
+
+  // Radar 2: Logs em Tempo Real (a cada 2s)
+  useEffect(() => {
+    let logInterval;
+
+    if (latestRun?.patient_uuid && latestRun?.status === 'processing') {
+      logInterval = setInterval(async () => {
+        try {
+          const response = await fetch(`http://localhost:8000/api/analysis/${latestRun.patient_uuid}/console`);
+          if (response.ok) {
+            const data = await response.json();
+            setConsoleLogs(data.logs);
+          }
+        } catch (error) {
+          console.error("Falha ao buscar logs da pipeline:", error);
+        }
+      }, 2000);
+    } 
+    // Se não estiver mais processando, fazemos um último fetch para garantir o log final
+    else if (latestRun?.patient_uuid && (latestRun?.status === 'completed' || latestRun?.status === 'failed')) {
+        fetch(`http://localhost:8000/api/analysis/${latestRun.patient_uuid}/console`)
+          .then(res => res.json())
+          .then(data => setConsoleLogs(data.logs))
+          .catch(err => console.error(err));
+    }
+
+    return () => clearInterval(logInterval);
+  }, [latestRun?.patient_uuid, latestRun?.status]);
+
 
   if (!latestRun) {
     return (
@@ -41,10 +85,9 @@ export default function MonitorFeature() {
   const isFailed = latestRun.status === 'failed';
 
   return (
-    /* Mudamos para um GRID layout: 1 coluna no celular, 3 colunas em telas grandes */
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
       
-      {/* COLUNA ESQUERDA (Ocupa 2 espaços): CARD DO PIPELINE */}
+      {/* COLUNA ESQUERDA: CARD DO PIPELINE */}
       <div className="xl:col-span-2 flex flex-col gap-6">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className={`p-6 flex items-center justify-between border-b 
@@ -55,7 +98,7 @@ export default function MonitorFeature() {
             <div>
               <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
                 <Cpu className={isProcessing ? "text-amber-500" : "text-slate-400"} size={24} />
-                Processamento Ativo
+                {isProcessing ? "Processamento Ativo" : "Última Análise Registrada"}
               </h3>
               <p className="text-sm text-slate-500 mt-1">
                 Paciente: <span className="font-semibold text-slate-700">{latestRun.patientId}</span> | 
@@ -75,29 +118,27 @@ export default function MonitorFeature() {
             </div>
           </div>
 
-          <div className="p-6 bg-slate-900 text-emerald-400 font-mono text-sm h-[400px] overflow-y-auto">
-            <div className="flex items-center gap-2 text-slate-400 mb-4 pb-2 border-b border-slate-700/50">
-              <Terminal size={16} /> Console do Pipeline (WSL2 Docker)
-            </div>
-            <div className="space-y-2">
-              <p className="text-slate-300">&gt; Inicializando ambiente isolado para UUID: {latestRun.patient_uuid || latestRun.id}...</p>
-              <p className="text-slate-300">&gt; Descompactando FASTQ e validando integridade...</p>
-              {isProcessing && <p className="animate-pulse text-amber-400">&gt; Executando BWA (Burrows-Wheeler Aligner)...</p>}
-              {isCompleted && (
-                <>
-                  <p>&gt; Executando BWA (Burrows-Wheeler Aligner)... [OK]</p>
-                  <p>&gt; Mapeamento concluído. Gerando arquivo .sam...</p>
-                  <p>&gt; Executando Samtools (conversão SAM para BAM)... [OK]</p>
-                  <p className="text-emerald-300 font-bold mt-4">&gt; PIPELINE FINALIZADO COM SUCESSO.</p>
-                </>
+          {/* O NOVO TERMINAL EM TEMPO REAL */}
+          <div className="p-6 bg-slate-900 shadow-inner">
+            <div className="flex items-center justify-between text-slate-400 mb-4 pb-2 border-b border-slate-700/50">
+              <span className="flex items-center gap-2">
+                <Terminal size={16} /> Console do Pipeline (WSL2 Docker)
+              </span>
+              {isProcessing && (
+                <span className="flex h-3 w-3 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                </span>
               )}
-              {isFailed && <p className="text-red-400 font-bold mt-4">&gt; ERRO FATAL: Falha na execução do pipeline.</p>}
+            </div>
+            <div className="font-mono text-xs text-emerald-400 h-[400px] overflow-y-auto whitespace-pre-wrap leading-relaxed">
+              {consoleLogs}
             </div>
           </div>
         </div>
       </div>
 
-      {/* COLUNA DIREITA (Ocupa 1 espaço): MONITOR DE CARGA DO SISTEMA */}
+      {/* COLUNA DIREITA: MONITOR DE CARGA DO SISTEMA */}
       <div className="xl:col-span-1 sticky top-6">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <HardwareMonitor sysHealth={sysHealth} />

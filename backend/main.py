@@ -1,3 +1,6 @@
+from fastapi.responses import FileResponse
+import glob
+import hashlib
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -119,10 +122,23 @@ async def start_analysis(
         novo_nome = f"{id_anonimo}_R1{extensao_segura}"
         caminho_wsl = WSL_PROCESSAMENTO / novo_nome
         
+        # --- INÍCIO DA INTEGRIDADE MD5 ---
+        logger.info(f"[{id_anonimo}] Iniciando transferência e cálculo de MD5...")
+        md5_hash = hashlib.md5()
+        
+        # Lendo e salvando em blocos de 8MB para não estourar a memória RAM
         with open(caminho_wsl, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        logger.info(f"Arquivo {novo_nome} salvo no WSL com sucesso.")
+            while chunk := await file.read(8192 * 1024): 
+                buffer.write(chunk)
+                md5_hash.update(chunk)
+                
+        checksum_final = md5_hash.hexdigest()
+        logger.info(f"Arquivo {novo_nome} salvo no WSL. MD5: {checksum_final}")
+
+        # Atualiza o banco de dados com o hash calculado
+        new_entry.md5_checksum = checksum_final
+        db.commit()
+        # --- FIM DA INTEGRIDADE MD5 ---
 
         # Aciona a função que importamos do pipeline.py
         background_tasks.add_task(processar_paciente_wsl, id_anonimo, novo_nome)
@@ -135,7 +151,7 @@ async def start_analysis(
         logger.error(f"Erro no upload/registro para o WSL: {e}")
         db.rollback() 
         raise HTTPException(status_code=500, detail="Erro interno ao ejetar arquivo")
-
+    
 @app.get("/api/history")
 def get_history(db: Session = Depends(get_db)):
     """Recupera o histórico completo de análises do banco de dados"""
@@ -166,6 +182,50 @@ def delete_analysis(analysis_id: int, db: Session = Depends(get_db)):
         db.rollback()
         logger.error(f"Erro ao deletar análise {analysis_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao remover análise do banco de dados")
+
+@app.get("/api/analysis/{uuid}/qc-report")
+async def get_qc_report(uuid: str):
+    """Busca e retorna o relatório HTML do FastQC gerado no WSL"""
+    # Procura na pasta do WSL por qualquer arquivo HTML que comece com o UUID da análise
+    arquivos_html = list(WSL_PROCESSAMENTO.glob(f"{uuid}*_fastqc.html"))
+    
+    if not arquivos_html:
+        raise HTTPException(status_code=404, detail="Relatório de qualidade ainda não disponível ou não gerado.")
+        
+    # Retorna o arquivo HTML estático para o React renderizar
+    return FileResponse(arquivos_html[0])
+
+@app.get("/api/analysis/{uuid}/console")
+async def get_console_logs(uuid: str):
+    """Lê o arquivo de log em tempo real do WSL e envia para o Frontend"""
+    caminho_log = WSL_PROCESSAMENTO / f"{uuid}.log"
+    
+    if not caminho_log.exists():
+        return {"logs": "> Aguardando inicialização do pipeline...\n"}
+        
+    with open(caminho_log, "r", encoding="utf-8") as f:
+        conteudo = f.read()
+        
+    return {"logs": conteudo}
+
+@app.get("/api/analysis/{uuid}/qualimap/{file_path:path}")
+async def get_qualimap_report(uuid: str, file_path: str):
+    """
+    Serve o relatório do Qualimap como um mini-servidor estático.
+    Entrega o HTML principal, o CSS e os gráficos gerados sob demanda.
+    """
+    pasta_qualimap = WSL_PROCESSAMENTO / f"{uuid}_qualimap"
+    
+    if not pasta_qualimap.exists():
+        raise HTTPException(status_code=404, detail="Relatório Qualimap não disponível ou ainda não gerado.")
+        
+    arquivo_alvo = pasta_qualimap / file_path
+    
+    # Prevenção de segurança (Directory Traversal)
+    if not str(arquivo_alvo).startswith(str(pasta_qualimap)) or not arquivo_alvo.exists():
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado.")
+        
+    return FileResponse(arquivo_alvo)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

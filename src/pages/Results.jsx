@@ -1,6 +1,6 @@
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { FileText, User, Activity, ChevronLeft, Download, Dna } from 'lucide-react';
+import { FileText, User, Activity, ChevronLeft, Download, Dna, BarChart2 } from 'lucide-react';
 
 export default function Results() {
   const location = useLocation();
@@ -25,9 +25,11 @@ export default function Results() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto py-6 space-y-6">
+    <div className="max-w-5xl mx-auto py-6 space-y-8">
       
-      {/* AÇÕES DE TOPO */}
+      {/* ========================================== */}
+      {/* BARRA DE AÇÕES DE TOPO (Oculta na impressão) */}
+      {/* ========================================== */}
       <div className="flex items-center justify-between print:hidden">
         <button 
           onClick={() => navigate(-1)} 
@@ -36,7 +38,6 @@ export default function Results() {
           <ChevronLeft size={16} /> Voltar
         </button>
         <div className="flex gap-3">
-          {/* Apenas o botão de Exportar PDF mantido */}
           <button 
             onClick={() => window.print()}
             className="flex items-center gap-2 px-4 py-2 bg-violet-700 text-white rounded-lg hover:bg-violet-800 font-medium text-sm shadow-sm transition-colors"
@@ -46,9 +47,12 @@ export default function Results() {
         </div>
       </div>
 
-      {/* PAPEL DO LAUDO */}
+      {/* ========================================== */}
+      {/* 1. ZONA DO LAUDO (Imprimível) */}
+      {/* ========================================== */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:shadow-none print:border-none">
         
+        {/* Cabeçalho do Laudo */}
         <div className="p-8 border-b border-slate-200 bg-slate-50 flex justify-between items-start print:bg-slate-50">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
@@ -63,6 +67,7 @@ export default function Results() {
           </div>
         </div>
 
+        {/* Informações Clínicas */}
         <div className="grid grid-cols-2 gap-6 p-8 border-b border-slate-100">
           <div className="space-y-4">
             <div>
@@ -90,6 +95,7 @@ export default function Results() {
           </div>
         </div>
 
+        {/* Resumo Biológico */}
         <div className="p-8 space-y-6">
           <div>
             <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2 mb-4">Resumo do Alinhamento</h3>
@@ -119,8 +125,56 @@ export default function Results() {
             <p className="text-xs text-amber-700">Este é um relatório de alinhamento (.bam). A chamada de variantes requer etapas adicionais na próxima atualização do pipeline.</p>
           </div>
         </div>
-
       </div>
+
+      {/* ========================================== */}
+      {/* 2. ZONA DE AUDITORIA INTERATIVA (Não imprimível) */}
+      {/* ========================================== */}
+      {runData.status === 'completed' && (
+        <div className="space-y-6 print:hidden">
+          
+          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2 border-b border-slate-200 pb-2 pt-4">
+            <BarChart2 size={24} className="text-violet-700"/>
+            Controle de Qualidade Detalhado
+          </h2>
+
+          <div className="grid grid-cols-1 gap-8">
+            {/* Relatório 1: FastQC */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-4 border-b border-slate-200 bg-slate-50">
+                <h3 className="text-md font-bold text-slate-800">1. Qualidade Pré-Alinhamento (FastQC)</h3>
+                <p className="text-xs text-slate-500 mt-1">Avaliação bruta das leituras do sequenciador antes do processamento e limpeza.</p>
+              </div>
+              <div className="w-full h-[500px] bg-slate-50">
+                <iframe
+                  src={`http://localhost:8000/api/analysis/${runData.patient_uuid}/qc-report`}
+                  title="Relatório FastQC"
+                  className="w-full h-full border-none"
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+              </div>
+            </div>
+
+            {/* Relatório 2: Qualimap */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-4 border-b border-slate-200 bg-slate-50">
+                <h3 className="text-md font-bold text-slate-800">2. Qualidade do Mapeamento BAM (Qualimap)</h3>
+                <p className="text-xs text-slate-500 mt-1">Análise de cobertura, profundidade e qualidade do alinhamento no genoma de referência.</p>
+              </div>
+              <div className="w-full h-[600px] bg-slate-50">
+                <iframe
+                  src={`http://localhost:8000/api/analysis/${runData.patient_uuid}/qualimap/qualimapReport.html`}
+                  title="Relatório Qualimap"
+                  className="w-full h-full border-none"
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+              </div>
+            </div>
+          </div>
+
+        </div>
+      )}
+
     </div>
   );
 }
