@@ -1,12 +1,31 @@
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { FileText, User, Activity, ChevronLeft, Download, Dna, BarChart2 } from 'lucide-react';
+import { FileText, User, Activity, ChevronLeft, Download, Dna, BarChart2, GitMerge, Timer, Zap } from 'lucide-react';
+
+// Mapeamento de nomes internos de etapas para labels legíveis no UI
+const STEP_LABELS = {
+  fastqc:     'FastQC (QC Bruto)',
+  trimmomatic:'Trimmomatic (Limpeza)',
+  bwa_mem:    'BWA-MEM (Alinhamento)',
+  samtools:   'Samtools (Conversão BAM)',
+  qualimap:   'Qualimap (QC BAM)',
+  varscan:    'VarScan2 (Chamada de Variantes)',
+  mutect2:    'Mutect2 (Chamada de Variantes)',
+};
 
 export default function Results() {
   const location = useLocation();
   const navigate = useNavigate();
-  
+
   const runData = location.state?.runData;
+
+  // Parse defensivo do JSON de telemetria — análises antigas retornam null sem crashar
+  const timeSteps = (() => {
+    if (!runData?.time_steps) return null;
+    try { return JSON.parse(runData.time_steps); } catch { return null; }
+  })();
+
+  const hasVariants = runData?.variants_consensus != null;
 
   if (!runData) {
     return (
@@ -14,8 +33,8 @@ export default function Results() {
         <FileText size={48} className="text-slate-300 mb-4" />
         <h2 className="text-xl font-bold text-slate-700">Nenhuma análise selecionada</h2>
         <p className="mt-2 text-center text-sm">Para visualizar um laudo, acesse a Dashboard e clique em "Resultado" na tabela de corridas concluídas.</p>
-        <button 
-          onClick={() => navigate('/')} 
+        <button
+          onClick={() => navigate('/')}
           className="mt-6 px-4 py-2 bg-violet-700 hover:bg-violet-800 text-white rounded-lg font-medium transition-colors"
         >
           Voltar para Dashboard
@@ -26,19 +45,19 @@ export default function Results() {
 
   return (
     <div className="max-w-5xl mx-auto py-6 space-y-8">
-      
+
       {/* ========================================== */}
       {/* BARRA DE AÇÕES DE TOPO (Oculta na impressão) */}
       {/* ========================================== */}
       <div className="flex items-center justify-between print:hidden">
-        <button 
-          onClick={() => navigate(-1)} 
+        <button
+          onClick={() => navigate(-1)}
           className="flex items-center gap-2 text-slate-500 hover:text-violet-700 transition-colors font-medium text-sm"
         >
           <ChevronLeft size={16} /> Voltar
         </button>
         <div className="flex gap-3">
-          <button 
+          <button
             onClick={() => window.print()}
             className="flex items-center gap-2 px-4 py-2 bg-violet-700 text-white rounded-lg hover:bg-violet-800 font-medium text-sm shadow-sm transition-colors"
           >
@@ -48,10 +67,10 @@ export default function Results() {
       </div>
 
       {/* ========================================== */}
-      {/* 1. ZONA DO LAUDO (Imprimível) */}
+      {/* 1. ZONA DO LAUDO (Imprimível)              */}
       {/* ========================================== */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:shadow-none print:border-none">
-        
+
         {/* Cabeçalho do Laudo */}
         <div className="p-8 border-b border-slate-200 bg-slate-50 flex justify-between items-start print:bg-slate-50">
           <div>
@@ -73,7 +92,7 @@ export default function Results() {
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Paciente</p>
               <p className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-                <User size={18} className="text-slate-400" /> {runData.patientId}
+                <User size={18} className="text-slate-400" /> {runData.patient_id}
               </p>
             </div>
             <div>
@@ -82,13 +101,13 @@ export default function Results() {
             </div>
           </div>
           <div className="space-y-4">
-              <div>
+            <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Protocolo Executado</p>
               <p className="text-md font-semibold text-violet-700 flex items-center gap-2">
                 <Activity size={18} /> {runData.protocol}
               </p>
             </div>
-              <div>
+            <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">UUID de Processamento</p>
               <p className="text-xs font-mono text-slate-500">{runData.patient_uuid}</p>
             </div>
@@ -96,11 +115,15 @@ export default function Results() {
         </div>
 
         {/* Resumo Biológico */}
-        <div className="p-8 space-y-6">
+        <div className="p-8 space-y-8">
+
+          {/* --- Alinhamento --- */}
           <div>
             <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2 mb-4">Resumo do Alinhamento</h3>
             <p className="text-sm text-slate-600 leading-relaxed">
-              O arquivo FASTQ fornecido foi submetido ao pipeline de bioinformática PantherFlow. As leituras foram mapeadas com sucesso contra o genoma de referência <span className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded border border-slate-200">Homo_sapiens_assembly38.fasta</span> utilizando o algoritmo BWA-MEM. 
+              O arquivo FASTQ fornecido foi submetido ao pipeline de bioinformática PantherFlow. As leituras foram mapeadas com sucesso contra o genoma de referência{' '}
+              <span className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded border border-slate-200">Homo_sapiens_assembly38.fasta</span>{' '}
+              utilizando o algoritmo BWA-MEM.
             </p>
             <ul className="mt-4 space-y-2 text-sm text-slate-600">
               <li className="flex justify-between items-center py-2 border-b border-slate-50">
@@ -120,23 +143,106 @@ export default function Results() {
             </ul>
           </div>
 
-          <div className="mt-8 p-4 bg-amber-50 border border-amber-200 rounded-lg print:border-amber-400">
-            <h4 className="font-bold text-amber-800 text-sm mb-1">Nota Técnica</h4>
-            <p className="text-xs text-amber-700">Este é um relatório de alinhamento (.bam). A chamada de variantes requer etapas adicionais na próxima atualização do pipeline.</p>
-          </div>
+          {/* --- Seção de Variantes (renderiza apenas se os dados existirem) --- */}
+          {hasVariants && (
+            <div>
+              <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2 mb-4 flex items-center gap-2">
+                <GitMerge size={20} className="text-violet-700" />
+                Identificação de Variantes (Tumor-Only)
+              </h3>
+
+              <div className="grid grid-cols-3 gap-4">
+                {/* VarScan2 */}
+                <div className="border border-slate-200 rounded-lg p-4 text-center bg-slate-50">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">VarScan2</p>
+                  <p className="text-3xl font-bold text-slate-700 font-mono">
+                    {runData.variants_varscan ?? '—'}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">variantes brutas</p>
+                </div>
+
+                {/* Mutect2 */}
+                <div className="border border-slate-200 rounded-lg p-4 text-center bg-slate-50">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Mutect2</p>
+                  <p className="text-3xl font-bold text-slate-700 font-mono">
+                    {runData.variants_mutect ?? '—'}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">variantes brutas</p>
+                </div>
+
+                {/* Consenso — destaque visual */}
+                <div className="border-2 border-violet-300 rounded-lg p-4 text-center bg-violet-50 relative">
+                  <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-violet-700 text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                    Consenso
+                  </span>
+                  <p className="text-xs font-bold text-violet-500 uppercase tracking-wider mb-2 mt-1">Multi-Caller</p>
+                  <p className="text-3xl font-bold text-violet-700 font-mono">
+                    {runData.variants_consensus}
+                  </p>
+                  <p className="text-xs text-violet-500 mt-1">concordantes entre os algoritmos</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Nota Técnica — exibe aviso legado apenas para análises sem dados de variantes */}
+          {!hasVariants && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg print:border-amber-400">
+              <h4 className="font-bold text-amber-800 text-sm mb-1">Nota Técnica</h4>
+              <p className="text-xs text-amber-700">Este laudo foi gerado por uma versão anterior do pipeline. A chamada de variantes multi-caller não está disponível para esta análise.</p>
+            </div>
+          )}
+
         </div>
       </div>
 
       {/* ========================================== */}
-      {/* 2. ZONA DE AUDITORIA INTERATIVA (Não imprimível) */}
+      {/* 2. ZONA DE AUDITORIA INTERATIVA            */}
+      {/* (Não imprimível)                           */}
       {/* ========================================== */}
       {runData.status === 'completed' && (
         <div className="space-y-6 print:hidden">
-          
+
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2 border-b border-slate-200 pb-2 pt-4">
-            <BarChart2 size={24} className="text-violet-700"/>
+            <BarChart2 size={24} className="text-violet-700" />
             Controle de Qualidade Detalhado
           </h2>
+
+          {/* --- Seção de Telemetria (renderiza apenas se os dados existirem) --- */}
+          {(timeSteps || runData.time_total) && (
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-2">
+                <Timer size={18} className="text-violet-700" />
+                <div>
+                  <h3 className="text-md font-bold text-slate-800">Métricas de Performance (Profiling)</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Custo computacional por etapa da pipeline de processamento.</p>
+                </div>
+              </div>
+              <div className="p-6">
+                {timeSteps && (
+                  <ul className="space-y-1 text-sm mb-4">
+                    {Object.entries(timeSteps).map(([step, tempo]) => (
+                      <li key={step} className="flex justify-between items-center py-2 border-b border-slate-50">
+                        <span className="text-slate-600">{STEP_LABELS[step] ?? step}</span>
+                        <span className="font-mono text-slate-700 font-semibold">{tempo}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {/* Tempo Total em destaque */}
+                {runData.time_total && (
+                  <div className="flex justify-between items-center bg-slate-900 text-white rounded-lg px-4 py-3 mt-2">
+                    <span className="text-sm font-bold flex items-center gap-2">
+                      <Zap size={16} className="text-amber-400" />
+                      Tempo Total da Pipeline
+                    </span>
+                    <span className="font-mono font-bold text-amber-400 text-lg">{runData.time_total}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-8">
             {/* Relatório 1: FastQC */}

@@ -13,7 +13,7 @@ RUN conda config --add channels defaults && \
 # 4. Instalação: Baixa o Python 3.10, o Java 21 e todas as suas ferramentas de Bioinfo!
 # Nota: Como o container já é um ambiente isolado, instalamos tudo direto nele, sem precisar do "conda create".
 RUN conda install -y python=3.10 \
-    fastqc trimmomatic bwa samtools qualimap gatk4 snpeff \
+    fastqc trimmomatic bwa samtools qualimap gatk4 varscan snpeff \
     "bcftools>=1.18" "htslib>=1.18" \
     openjdk=17 && \
     conda clean -a -y

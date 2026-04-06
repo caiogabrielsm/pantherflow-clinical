@@ -42,7 +42,7 @@ export default function RunsTable({ runs, onRunDeleted }) {
             runs.map((run) => (
               <tr key={run.id} className="hover:bg-slate-50 transition-colors">
                 <td className="p-4">
-                  <div className="font-medium text-slate-900">{run.patientId}</div>
+                  <div className="font-medium text-slate-900">{run.patient_id}</div>
                   <div className="text-xs text-slate-400 font-mono mt-0.5">{run.patient_uuid}</div>
                 </td>
                 <td className="p-4 text-sm text-slate-600">{run.doctor}</td>

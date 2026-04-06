@@ -11,8 +11,8 @@ function createWindow() {
     title: "PantherFlow Clinical",
     icon: path.join(__dirname, 'logo.png'), // <--- ADICIONE ESTA LINHA AQUI!
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false
+      nodeIntegration: false,
+      contextIsolation: true
     }
   });
 

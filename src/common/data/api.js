@@ -39,6 +39,12 @@ export const api = {
     return response.data;
   },
 
+  // 5. Busca os logs do console da pipeline em tempo real
+  getConsoleLogs: async (uuid) => {
+    const response = await axios.get(`${API_URL}/analysis/${uuid}/console`);
+    return response.data;
+  },
+
   // Adicione junto com as outras funções (getHistory, getHealth, etc)
   checkDockerHealth: async () => {
     try {

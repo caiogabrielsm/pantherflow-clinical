@@ -49,11 +49,8 @@ export default function MonitorFeature() {
     if (latestRun?.patient_uuid && latestRun?.status === 'processing') {
       logInterval = setInterval(async () => {
         try {
-          const response = await fetch(`http://localhost:8000/api/analysis/${latestRun.patient_uuid}/console`);
-          if (response.ok) {
-            const data = await response.json();
-            setConsoleLogs(data.logs);
-          }
+          const data = await api.getConsoleLogs(latestRun.patient_uuid);
+          if (data) setConsoleLogs(data.logs);
         } catch (error) {
           console.error("Falha ao buscar logs da pipeline:", error);
         }
@@ -61,9 +58,8 @@ export default function MonitorFeature() {
     } 
     // Se não estiver mais processando, fazemos um último fetch para garantir o log final
     else if (latestRun?.patient_uuid && (latestRun?.status === 'completed' || latestRun?.status === 'failed')) {
-        fetch(`http://localhost:8000/api/analysis/${latestRun.patient_uuid}/console`)
-          .then(res => res.json())
-          .then(data => setConsoleLogs(data.logs))
+        api.getConsoleLogs(latestRun.patient_uuid)
+          .then(data => { if (data) setConsoleLogs(data.logs); })
           .catch(err => console.error(err));
     }
 
@@ -101,7 +97,7 @@ export default function MonitorFeature() {
                 {isProcessing ? "Processamento Ativo" : "Última Análise Registrada"}
               </h3>
               <p className="text-sm text-slate-500 mt-1">
-                Paciente: <span className="font-semibold text-slate-700">{latestRun.patientId}</span> | 
+                Paciente: <span className="font-semibold text-slate-700">{latestRun.patient_id}</span> |
                 Protocolo: <span className="font-semibold text-slate-700">{latestRun.protocol}</span>
               </p>
             </div>

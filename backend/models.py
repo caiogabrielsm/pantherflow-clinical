@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Text
 from sqlalchemy.sql import func
 from database import Base
 
@@ -23,3 +23,10 @@ class Analysis(Base):
     bwa_version = Column(String, nullable=True)         # Versão do BWA utilizada
     samtools_version = Column(String, nullable=True)    # Versão do Samtools utilizada
     reference_version = Column(String, nullable=True)   # Genoma de Referência
+
+    # --- SPRINT 2: MULTI-CALLER CONSENSUS E TELEMETRIA ---
+    variants_varscan   = Column(Integer, nullable=True)  # Contagem bruta VarScan2
+    variants_mutect    = Column(Integer, nullable=True)  # Contagem bruta Mutect2
+    variants_consensus = Column(Integer, nullable=True)  # Interseção VarScan2 ∩ Mutect2
+    time_steps         = Column(Text, nullable=True)     # JSON: {"fastqc": "12.0s", ...}
+    time_total         = Column(String, nullable=True)   # Ex: "845.2s"
