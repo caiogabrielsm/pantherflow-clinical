@@ -1,6 +1,22 @@
-import React from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { FileText, User, Activity, ChevronLeft, Download, Dna, BarChart2, GitMerge, Timer, Zap } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { FileText, User, Activity, ChevronLeft, Download, Dna, BarChart2, GitMerge, Timer, Zap, FlaskConical } from 'lucide-react';
+import { api } from '../common/data/api';
+
+// Badge colorido de impacto SnpEff — HIGH vermelho, MODERATE âmbar, LOW verde, MODIFIER cinza
+function ImpactBadge({ impact }) {
+  const styles = {
+    HIGH:     'bg-red-100 text-red-700 border-red-200',
+    MODERATE: 'bg-amber-100 text-amber-700 border-amber-200',
+    LOW:      'bg-emerald-100 text-emerald-700 border-emerald-200',
+    MODIFIER: 'bg-slate-100 text-slate-500 border-slate-200',
+  };
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase tracking-wider ${styles[impact] ?? styles.MODIFIER}`}>
+      {impact}
+    </span>
+  );
+}
 
 // Mapeamento de nomes internos de etapas para labels legíveis no UI
 const STEP_LABELS = {
@@ -9,15 +25,24 @@ const STEP_LABELS = {
   bwa_mem:    'BWA-MEM (Alinhamento)',
   samtools:   'Samtools (Conversão BAM)',
   qualimap:   'Qualimap (QC BAM)',
-  varscan:    'VarScan2 (Chamada de Variantes)',
+  varscan2:   'VarScan2 (Chamada de Variantes)',
   mutect2:    'Mutect2 (Chamada de Variantes)',
 };
 
 export default function Results() {
-  const location = useLocation();
+  const { uuid } = useParams();
   const navigate = useNavigate();
+  const [runData, setRunData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const runData = location.state?.runData;
+  useEffect(() => {
+    if (!uuid) { setLoading(false); return; }
+    api.getAnalysis(uuid)
+      .then(data => setRunData(data))
+      .catch(() => setError('Não foi possível carregar os dados desta análise.'))
+      .finally(() => setLoading(false));
+  }, [uuid]);
 
   // Parse defensivo do JSON de telemetria — análises antigas retornam null sem crashar
   const timeSteps = (() => {
@@ -25,14 +50,28 @@ export default function Results() {
     try { return JSON.parse(runData.time_steps); } catch { return null; }
   })();
 
+  // Parse defensivo do JSON de anotação SnpEff
+  const annotationSummary = (() => {
+    if (!runData?.annotation_summary) return null;
+    try { return JSON.parse(runData.annotation_summary); } catch { return null; }
+  })();
+
   const hasVariants = runData?.variants_consensus != null;
 
-  if (!runData) {
+  if (loading) {
+    return (
+      <div className="max-w-4xl mx-auto py-10 flex flex-col items-center justify-center text-slate-500 bg-white rounded-xl border border-slate-200 shadow-sm p-10 mt-6">
+        <p className="text-sm">Carregando análise...</p>
+      </div>
+    );
+  }
+
+  if (error || !runData) {
     return (
       <div className="max-w-4xl mx-auto py-10 flex flex-col items-center justify-center text-slate-500 bg-white rounded-xl border border-slate-200 shadow-sm p-10 mt-6">
         <FileText size={48} className="text-slate-300 mb-4" />
-        <h2 className="text-xl font-bold text-slate-700">Nenhuma análise selecionada</h2>
-        <p className="mt-2 text-center text-sm">Para visualizar um laudo, acesse a Dashboard e clique em "Resultado" na tabela de corridas concluídas.</p>
+        <h2 className="text-xl font-bold text-slate-700">Análise não encontrada</h2>
+        <p className="mt-2 text-center text-sm">{error || 'Para visualizar um laudo, acesse a Dashboard e clique em "Resultado" na tabela de corridas concluídas.'}</p>
         <button
           onClick={() => navigate('/')}
           className="mt-6 px-4 py-2 bg-violet-700 hover:bg-violet-800 text-white rounded-lg font-medium transition-colors"
@@ -57,6 +96,16 @@ export default function Results() {
           <ChevronLeft size={16} /> Voltar
         </button>
         <div className="flex gap-3">
+          {/* Botão de download do VCF anotado — só aparece se a anotação existir */}
+          {annotationSummary && (
+            <a
+              href={api.getAnnotatedVcfUrl(uuid)}
+              download
+              className="flex items-center gap-2 px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 font-medium text-sm shadow-sm transition-colors"
+            >
+              <Download size={16} /> Baixar VCF Anotado
+            </a>
+          )}
           <button
             onClick={() => window.print()}
             className="flex items-center gap-2 px-4 py-2 bg-violet-700 text-white rounded-lg hover:bg-violet-800 font-medium text-sm shadow-sm transition-colors"
@@ -241,6 +290,86 @@ export default function Results() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* --- Seção de Anotação Funcional (SnpEff) --- */}
+          {annotationSummary && (
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FlaskConical size={18} className="text-violet-700" />
+                  <div>
+                    <h3 className="text-md font-bold text-slate-800">Anotação Funcional (SnpEff GRCh38.99)</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">Impacto biológico das variantes de consenso identificadas.</p>
+                  </div>
+                </div>
+                <a
+                  href={api.getAnnotatedVcfUrl(uuid)}
+                  download
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  <Download size={13} /> VCF Completo
+                </a>
+              </div>
+
+              {/* Cards de totais */}
+              <div className="grid grid-cols-4 divide-x divide-slate-100 border-b border-slate-100">
+                <div className="p-4 text-center">
+                  <p className="text-2xl font-bold text-slate-800 font-mono">{annotationSummary.total_annotated}</p>
+                  <p className="text-xs text-slate-500 mt-1 font-medium uppercase tracking-wider">Total</p>
+                </div>
+                <div className="p-4 text-center">
+                  <p className="text-2xl font-bold text-red-600 font-mono">{annotationSummary.high_impact}</p>
+                  <p className="text-xs text-red-400 mt-1 font-bold uppercase tracking-wider">HIGH</p>
+                </div>
+                <div className="p-4 text-center">
+                  <p className="text-2xl font-bold text-amber-500 font-mono">{annotationSummary.moderate_impact}</p>
+                  <p className="text-xs text-amber-400 mt-1 font-bold uppercase tracking-wider">MODERATE</p>
+                </div>
+                <div className="p-4 text-center">
+                  <p className="text-2xl font-bold text-slate-400 font-mono">
+                    {annotationSummary.low_impact + annotationSummary.modifier_impact}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1 font-bold uppercase tracking-wider">LOW / MODIFIER</p>
+                </div>
+              </div>
+
+              {/* Tabela de top variantes */}
+              {annotationSummary.top_variants?.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 text-xs uppercase tracking-wider">
+                        <th className="p-3 pl-4 font-semibold">Gene</th>
+                        <th className="p-3 font-semibold">Posição</th>
+                        <th className="p-3 font-semibold">Ref → Alt</th>
+                        <th className="p-3 font-semibold">Efeito</th>
+                        <th className="p-3 font-semibold">Impacto</th>
+                        <th className="p-3 pr-4 font-semibold">HGVS (Proteína)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {annotationSummary.top_variants.map((v, i) => (
+                        <tr key={i} className="hover:bg-slate-50 transition-colors">
+                          <td className="p-3 pl-4 font-bold text-slate-800">{v.gene || '—'}</td>
+                          <td className="p-3 font-mono text-xs text-slate-500">{v.chrom}:{v.pos}</td>
+                          <td className="p-3 font-mono text-xs text-slate-600">
+                            <span className="text-slate-400">{v.ref}</span>
+                            <span className="mx-1 text-slate-300">→</span>
+                            <span>{v.alt}</span>
+                          </td>
+                          <td className="p-3 text-xs text-slate-600">{v.effect?.replace(/_/g, ' ')}</td>
+                          <td className="p-3">
+                            <ImpactBadge impact={v.impact} />
+                          </td>
+                          <td className="p-3 pr-4 font-mono text-xs text-slate-500">{v.hgvs_p}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 

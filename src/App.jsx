@@ -15,7 +15,7 @@ function App() {
           <Route index element={<Dashboard />} />
           <Route path="new-analysis" element={<NewAnalysis />} />
           <Route path="monitor" element={<Monitor />} /> 
-          <Route path="results" element={<Results />} />
+          <Route path="results/:uuid" element={<Results />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<div className="p-6 text-slate-500">Página em construção</div>} />
         </Route>

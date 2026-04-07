@@ -30,3 +30,6 @@ class Analysis(Base):
     variants_consensus = Column(Integer, nullable=True)  # Interseção VarScan2 ∩ Mutect2
     time_steps         = Column(Text, nullable=True)     # JSON: {"fastqc": "12.0s", ...}
     time_total         = Column(String, nullable=True)   # Ex: "845.2s"
+
+    # --- SPRINT 3: ANOTAÇÃO FUNCIONAL (SnpEff) ---
+    annotation_summary = Column(Text, nullable=True)     # JSON: resumo das variantes anotadas

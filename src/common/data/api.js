@@ -39,11 +39,21 @@ export const api = {
     return response.data;
   },
 
-  // 5. Busca os logs do console da pipeline em tempo real
+  // 5. Busca os dados de uma análise pelo UUID (suporta refresh da página Results)
+  getAnalysis: async (uuid) => {
+    const response = await axios.get(`${API_URL}/analysis/${uuid}`);
+    return response.data;
+  },
+
+  // 6. Busca os logs do console da pipeline em tempo real
   getConsoleLogs: async (uuid) => {
     const response = await axios.get(`${API_URL}/analysis/${uuid}/console`);
     return response.data;
   },
+
+  // 7. Download do VCF anotado pelo SnpEff
+  // Usa URL direta — aciona o download nativo do browser via <a> sem passar pelo estado React.
+  getAnnotatedVcfUrl: (uuid) => `${API_URL}/analysis/${uuid}/annotated-vcf`,
 
   // Adicione junto com as outras funções (getHistory, getHealth, etc)
   checkDockerHealth: async () => {

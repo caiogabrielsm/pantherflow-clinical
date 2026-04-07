@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()  # Carrega backend/.env antes de qualquer import que use os.getenv()
+
 from fastapi.responses import FileResponse
 import glob
 import hashlib
@@ -97,7 +100,7 @@ async def start_analysis(
 ):
     """Gera UUID, salva no banco e ejeta o FASTQ anonimizado no WSL2"""
     id_anonimo = str(uuid.uuid4())
-    logger.info(f"Anonimizando Paciente {patientId} -> UUID: {id_anonimo}")
+    logger.info(f"[{id_anonimo}] Nova análise iniciada.")
     
     try:
         # Usa o nosso modelo importado do models.py
@@ -158,6 +161,14 @@ def get_history(db: Session = Depends(get_db)):
     history = db.query(models.Analysis).order_by(models.Analysis.date.desc()).all()
     return history
 
+@app.get("/api/analysis/{uuid}")
+def get_analysis(uuid: str, db: Session = Depends(get_db)):
+    """Busca uma análise pelo patient_uuid — suporta refresh da página Results"""
+    analysis = db.query(models.Analysis).filter(models.Analysis.patient_uuid == uuid).first()
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Análise não encontrada")
+    return analysis
+
 @app.delete("/api/analysis/{analysis_id}")
 def delete_analysis(analysis_id: int, db: Session = Depends(get_db)):
     """Remove o registro do banco e apaga os arquivos associados no WSL"""
@@ -182,6 +193,23 @@ def delete_analysis(analysis_id: int, db: Session = Depends(get_db)):
         db.rollback()
         logger.error(f"Erro ao deletar análise {analysis_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao remover análise do banco de dados")
+
+@app.get("/api/analysis/{uuid}/annotated-vcf")
+async def get_annotated_vcf(uuid: str):
+    """Serve o VCF anotado pelo SnpEff para download pelo frontend"""
+    if not re.match(r'^[0-9a-f-]{36}$', uuid):
+        raise HTTPException(status_code=400, detail="UUID inválido.")
+
+    vcf_path = WSL_PROCESSAMENTO / f"{uuid}_consensus_annotated.vcf"
+    if not vcf_path.exists():
+        raise HTTPException(status_code=404, detail="VCF anotado ainda não disponível ou não gerado.")
+
+    return FileResponse(
+        vcf_path,
+        media_type="text/plain",
+        filename=f"pantherflow_{uuid[:8]}_annotated.vcf"
+    )
+
 
 @app.get("/api/analysis/{uuid}/qc-report")
 async def get_qc_report(uuid: str):

@@ -59,7 +59,7 @@ export default function RunsTable({ runs, onRunDeleted }) {
                   {/* O NOVO BOTÃO DE LAUDO (Só aparece se concluído) */}
                   {run.status === 'completed' && (
                     <button 
-                      onClick={() => navigate('/results', { state: { runData: run } })}
+                      onClick={() => navigate(`/results/${run.patient_uuid}`)}
                       className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors flex items-center gap-1 font-semibold text-xs"
                       title="Ver Laudo Clínico"
                     >

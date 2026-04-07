@@ -15,7 +15,7 @@ RUN conda config --add channels defaults && \
 RUN conda install -y python=3.10 \
     fastqc trimmomatic bwa samtools qualimap gatk4 varscan snpeff \
     "bcftools>=1.18" "htslib>=1.18" \
-    openjdk=17 && \
+    openjdk=21 && \
     conda clean -a -y
 
 # 5. Comando padrão: Quando o container ligar, ele vai abrir a tela preta do Linux (bash)
