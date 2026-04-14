@@ -6,3 +6,7 @@ pantherflow.log
 __pycache__/
 venv/
 node_modules/
+
+# Credenciais e variáveis de ambiente — NUNCA versionar
+.env
+backend/.env

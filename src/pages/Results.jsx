@@ -18,6 +18,70 @@ function ImpactBadge({ impact }) {
   );
 }
 
+// Badge de patogenicidade ClinVar
+function ClinvarBadge({ sig }) {
+  if (!sig || sig === '—') return <span className="text-slate-400 text-xs">—</span>;
+  const s = sig.toLowerCase();
+  if (s.includes('pathogenic') && !s.includes('likely_benign'))
+    return <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase tracking-wider bg-red-100 text-red-700 border-red-200">{sig}</span>;
+  if (s.includes('benign'))
+    return <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase tracking-wider bg-emerald-100 text-emerald-700 border-emerald-200">{sig}</span>;
+  if (s.includes('uncertain') || s.includes('vus'))
+    return <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase tracking-wider bg-amber-100 text-amber-700 border-amber-200">VUS</span>;
+  return <span className="text-xs text-slate-500">{sig}</span>;
+}
+
+// Tabela de variantes — modo base (VarScan2/Mutect2) ou modo clínico completo (Consenso)
+function VariantTable({ variants, clinical }) {
+  if (!variants || variants.length === 0) {
+    return (
+      <p className="text-sm text-slate-400 italic text-center py-6">
+        Nenhuma variante encontrada neste caller para o painel alvo.
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-x-auto rounded-lg border border-slate-100">
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 text-xs uppercase tracking-wider">
+            <th className="p-3 pl-4 font-semibold">Chr</th>
+            <th className="p-3 font-semibold">Posição</th>
+            <th className="p-3 font-semibold">Ref → Alt</th>
+            <th className="p-3 font-semibold">Gene</th>
+            <th className="p-3 font-semibold">Efeito</th>
+            <th className="p-3 font-semibold">Impacto</th>
+            <th className="p-3 font-semibold">HGVS (Proteína)</th>
+            {clinical && <th className="p-3 font-semibold">ClinVar</th>}
+            {clinical && <th className="p-3 font-semibold">Doença Associada</th>}
+            {clinical && <th className="p-3 pr-4 font-semibold">COSMIC (n)</th>}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-50">
+          {variants.map((v, i) => (
+            <tr key={i} className="hover:bg-slate-50 transition-colors">
+              <td className="p-3 pl-4 font-mono text-xs text-slate-500">{v.chrom}</td>
+              <td className="p-3 font-mono text-xs text-slate-500">{v.pos}</td>
+              <td className="p-3 font-mono text-xs text-slate-600">
+                <span className="text-slate-400">{v.ref}</span>
+                <span className="mx-1 text-slate-300">→</span>
+                <span>{v.alt}</span>
+              </td>
+              <td className="p-3 font-bold text-slate-800">{v.gene || '—'}</td>
+              <td className="p-3 text-xs text-slate-600">{v.effect?.replace(/_/g, ' ') || '—'}</td>
+              <td className="p-3"><ImpactBadge impact={v.impact ?? 'MODIFIER'} /></td>
+              <td className="p-3 font-mono text-xs text-slate-500">{v.hgvs_p || '—'}</td>
+              {clinical && <td className="p-3"><ClinvarBadge sig={v.clinvar_sig} /></td>}
+              {clinical && <td className="p-3 text-xs text-slate-500 max-w-[180px] truncate" title={v.clinvar_disease}>{v.clinvar_disease || '—'}</td>}
+              {clinical && <td className="p-3 pr-4 font-mono text-xs font-semibold text-violet-700">{v.cosmic_cnt !== '—' ? v.cosmic_cnt : <span className="text-slate-300">—</span>}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // Mapeamento de nomes internos de etapas para labels legíveis no UI
 const STEP_LABELS = {
   fastqc:     'FastQC (QC Bruto)',
@@ -56,7 +120,18 @@ export default function Results() {
     try { return JSON.parse(runData.annotation_summary); } catch { return null; }
   })();
 
+  const varscanList = (() => {
+    if (!runData?.varscan_details) return [];
+    try { return JSON.parse(runData.varscan_details); } catch { return []; }
+  })();
+
+  const mutectList = (() => {
+    if (!runData?.mutect_details) return [];
+    try { return JSON.parse(runData.mutect_details); } catch { return []; }
+  })();
+
   const hasVariants = runData?.variants_consensus != null;
+  const [activeTab, setActiveTab] = useState('varscan');
 
   if (loading) {
     return (
@@ -192,50 +267,47 @@ export default function Results() {
             </ul>
           </div>
 
-          {/* --- Seção de Variantes (renderiza apenas se os dados existirem) --- */}
-          {hasVariants && (
+          {/* --- Seção de Variantes com Abas --- */}
+          {hasVariants ? (
             <div>
               <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2 mb-4 flex items-center gap-2">
                 <GitMerge size={20} className="text-violet-700" />
                 Identificação de Variantes (Tumor-Only)
               </h3>
 
-              <div className="grid grid-cols-3 gap-4">
-                {/* VarScan2 */}
-                <div className="border border-slate-200 rounded-lg p-4 text-center bg-slate-50">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">VarScan2</p>
-                  <p className="text-3xl font-bold text-slate-700 font-mono">
-                    {runData.variants_varscan ?? '—'}
-                  </p>
-                  <p className="text-xs text-slate-400 mt-1">variantes brutas</p>
-                </div>
-
-                {/* Mutect2 */}
-                <div className="border border-slate-200 rounded-lg p-4 text-center bg-slate-50">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Mutect2</p>
-                  <p className="text-3xl font-bold text-slate-700 font-mono">
-                    {runData.variants_mutect ?? '—'}
-                  </p>
-                  <p className="text-xs text-slate-400 mt-1">variantes brutas</p>
-                </div>
-
-                {/* Consenso — destaque visual */}
-                <div className="border-2 border-violet-300 rounded-lg p-4 text-center bg-violet-50 relative">
-                  <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-violet-700 text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
-                    Consenso
-                  </span>
-                  <p className="text-xs font-bold text-violet-500 uppercase tracking-wider mb-2 mt-1">Multi-Caller</p>
-                  <p className="text-3xl font-bold text-violet-700 font-mono">
-                    {runData.variants_consensus}
-                  </p>
-                  <p className="text-xs text-violet-500 mt-1">concordantes entre os algoritmos</p>
-                </div>
+              {/* Cabeçalho das abas */}
+              <div className="flex border-b border-slate-200 mb-4 gap-1">
+                {[
+                  { key: 'varscan',   label: 'VarScan2',        count: runData.variants_varscan,   color: 'text-slate-700' },
+                  { key: 'mutect',    label: 'Mutect2',         count: runData.variants_mutect,    color: 'text-slate-700' },
+                  { key: 'consensus', label: 'Consenso',        count: runData.variants_consensus, color: 'text-violet-700' },
+                ].map(tab => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg border-b-2 transition-colors flex items-center gap-2 ${
+                      activeTab === tab.key
+                        ? 'border-violet-600 text-violet-700 bg-violet-50'
+                        : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {tab.label}
+                    <span className={`text-xs font-mono font-bold px-1.5 py-0.5 rounded-full ${
+                      activeTab === tab.key ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'
+                    }`}>
+                      {tab.count ?? 0}
+                    </span>
+                  </button>
+                ))}
               </div>
-            </div>
-          )}
 
-          {/* Nota Técnica — exibe aviso legado apenas para análises sem dados de variantes */}
-          {!hasVariants && (
+              {/* Conteúdo da aba ativa */}
+              <VariantTable
+                variants={activeTab === 'varscan' ? varscanList : activeTab === 'mutect' ? mutectList : annotationSummary?.top_variants ?? []}
+                clinical={activeTab === 'consensus'}
+              />
+            </div>
+          ) : (
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg print:border-amber-400">
               <h4 className="font-bold text-amber-800 text-sm mb-1">Nota Técnica</h4>
               <p className="text-xs text-amber-700">Este laudo foi gerado por uma versão anterior do pipeline. A chamada de variantes multi-caller não está disponível para esta análise.</p>
@@ -335,41 +407,7 @@ export default function Results() {
                 </div>
               </div>
 
-              {/* Tabela de top variantes */}
-              {annotationSummary.top_variants?.length > 0 && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 text-xs uppercase tracking-wider">
-                        <th className="p-3 pl-4 font-semibold">Gene</th>
-                        <th className="p-3 font-semibold">Posição</th>
-                        <th className="p-3 font-semibold">Ref → Alt</th>
-                        <th className="p-3 font-semibold">Efeito</th>
-                        <th className="p-3 font-semibold">Impacto</th>
-                        <th className="p-3 pr-4 font-semibold">HGVS (Proteína)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50">
-                      {annotationSummary.top_variants.map((v, i) => (
-                        <tr key={i} className="hover:bg-slate-50 transition-colors">
-                          <td className="p-3 pl-4 font-bold text-slate-800">{v.gene || '—'}</td>
-                          <td className="p-3 font-mono text-xs text-slate-500">{v.chrom}:{v.pos}</td>
-                          <td className="p-3 font-mono text-xs text-slate-600">
-                            <span className="text-slate-400">{v.ref}</span>
-                            <span className="mx-1 text-slate-300">→</span>
-                            <span>{v.alt}</span>
-                          </td>
-                          <td className="p-3 text-xs text-slate-600">{v.effect?.replace(/_/g, ' ')}</td>
-                          <td className="p-3">
-                            <ImpactBadge impact={v.impact} />
-                          </td>
-                          <td className="p-3 pr-4 font-mono text-xs text-slate-500">{v.hgvs_p}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+              <p className="px-4 pb-4 text-xs text-slate-400">Tabela de variantes disponível na aba <span className="font-semibold text-violet-600">Consenso</span> acima.</p>
             </div>
           )}
 

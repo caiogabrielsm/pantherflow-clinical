@@ -91,68 +91,90 @@ def check_docker_health():
 
 @app.post("/api/upload")
 async def start_analysis(
-    background_tasks: BackgroundTasks, 
-    file: UploadFile = File(...), 
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
     patientId: str = Form(...),
     doctor: str = Form(...),
     protocol: str = Form(...),
+    sex: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    """Gera UUID, salva no banco e ejeta o FASTQ anonimizado no WSL2"""
+    """Gera UUID, salva R1 e R2 no disco e inicia o pipeline Paired-End"""
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
+    if len(files) > 2:
+        raise HTTPException(status_code=400, detail="Envie no máximo 2 arquivos (R1 e R2).")
+
     id_anonimo = str(uuid.uuid4())
-    logger.info(f"[{id_anonimo}] Nova análise iniciada.")
-    
+    logger.info(f"[{id_anonimo}] Nova análise iniciada ({len(files)} arquivo(s)).")
+
     try:
-        # Usa o nosso modelo importado do models.py
         new_entry = models.Analysis(
-            patient_id=patientId, 
-            patient_uuid=id_anonimo, 
-            doctor=doctor, 
-            protocol=protocol
+            patient_id=patientId,
+            patient_uuid=id_anonimo,
+            doctor=doctor,
+            protocol=protocol,
+            biological_sex=sex
         )
         db.add(new_entry)
         db.commit()
         db.refresh(new_entry)
-        
-        # Sanitização da extensão
-        extensoes = Path(file.filename).suffixes
-        extensao_bruta = "".join(extensoes).lower()
-        extensao_segura = re.sub(r'[^a-z0-9.]', '', extensao_bruta)
-        
-        if not extensao_segura.endswith(('.fastq', '.fastq.gz', '.fq', '.fq.gz')):
-            raise HTTPException(status_code=400, detail="Formato de arquivo inválido. Use .fastq ou .fastq.gz")
 
-        novo_nome = f"{id_anonimo}_R1{extensao_segura}"
-        caminho_wsl = WSL_PROCESSAMENTO / novo_nome
-        
-        # --- INÍCIO DA INTEGRIDADE MD5 ---
-        logger.info(f"[{id_anonimo}] Iniciando transferência e cálculo de MD5...")
-        md5_hash = hashlib.md5()
-        
-        # Lendo e salvando em blocos de 8MB para não estourar a memória RAM
-        with open(caminho_wsl, "wb") as buffer:
-            while chunk := await file.read(8192 * 1024): 
-                buffer.write(chunk)
-                md5_hash.update(chunk)
-                
-        checksum_final = md5_hash.hexdigest()
-        logger.info(f"Arquivo {novo_nome} salvo no WSL. MD5: {checksum_final}")
+        EXTENSOES_VALIDAS = ('.fastq', '.fastq.gz', '.fq', '.fq.gz')
+        nomes_salvos = {}   # {"R1": "uuid_R1.fastq.gz", "R2": "uuid_R2.fastq.gz"}
+        md5_hashes   = {}   # {"R1": "abc123", "R2": "def456"}
 
-        # Atualiza o banco de dados com o hash calculado
-        new_entry.md5_checksum = checksum_final
+        for upload in files:
+            # Identifica se é R1 ou R2 pelo nome original do arquivo
+            nome_original = upload.filename or ""
+            if re.search(r'[_\-\.]R2[_\-\.]|[_\-\.]R2$|_2\.', nome_original, re.IGNORECASE):
+                tag = "R2"
+            else:
+                tag = "R1"  # fallback: arquivo único ou R1 explícito
+
+            extensoes = Path(nome_original).suffixes
+            extensao_bruta = "".join(extensoes).lower()
+            extensao_segura = re.sub(r'[^a-z0-9.]', '', extensao_bruta)
+
+            if not extensao_segura.endswith(EXTENSOES_VALIDAS):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Formato inválido ({nome_original}). Use .fastq ou .fastq.gz"
+                )
+
+            novo_nome = f"{id_anonimo}_{tag}{extensao_segura}"
+            caminho_wsl = WSL_PROCESSAMENTO / novo_nome
+
+            logger.info(f"[{id_anonimo}] Salvando {tag} ({novo_nome})...")
+            md5_hash = hashlib.md5()
+            with open(caminho_wsl, "wb") as buffer:
+                while chunk := await upload.read(8192 * 1024):
+                    buffer.write(chunk)
+                    md5_hash.update(chunk)
+
+            nomes_salvos[tag] = novo_nome
+            md5_hashes[tag]   = md5_hash.hexdigest()
+            logger.info(f"[{id_anonimo}] {tag} salvo. MD5: {md5_hashes[tag]}")
+
+        if "R1" not in nomes_salvos:
+            raise HTTPException(status_code=400, detail="R1 não identificado. Verifique o nome dos arquivos.")
+
+        # Persiste o MD5 do R1 (campo existente); R2 fica no log
+        new_entry.md5_checksum = md5_hashes.get("R1")
         db.commit()
-        # --- FIM DA INTEGRIDADE MD5 ---
 
-        # Aciona a função que importamos do pipeline.py
-        background_tasks.add_task(processar_paciente_wsl, id_anonimo, novo_nome)
+        nome_r1 = nomes_salvos["R1"]
+        nome_r2 = nomes_salvos.get("R2")   # None se modo Single-End
 
-        return {"status": "processing", "db_id": new_entry.id, "patientId": patientId, "uuid": id_anonimo}
-        
+        background_tasks.add_task(processar_paciente_wsl, id_anonimo, nome_r1, nome_r2)
+
+        return {"status": "processing", "db_id": new_entry.id, "uuid": id_anonimo}
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Erro no upload/registro para o WSL: {e}")
-        db.rollback() 
+        db.rollback()
         raise HTTPException(status_code=500, detail="Erro interno ao ejetar arquivo")
     
 @app.get("/api/history")

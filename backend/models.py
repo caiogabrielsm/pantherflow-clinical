@@ -33,3 +33,10 @@ class Analysis(Base):
 
     # --- SPRINT 3: ANOTAÇÃO FUNCIONAL (SnpEff) ---
     annotation_summary = Column(Text, nullable=True)     # JSON: resumo das variantes anotadas
+
+    # --- SPRINT 4: DADOS CLÍNICOS DO PACIENTE ---
+    biological_sex = Column(String, nullable=True)   # "M" | "F" — necessário para CNV e análises sexo-dependentes
+
+    # --- SPRINT 4: DETALHE DE VARIANTES POR CALLER ---
+    varscan_details = Column(Text, nullable=True)  # JSON: [{chrom,pos,ref,alt}, ...]
+    mutect_details  = Column(Text, nullable=True)  # JSON: [{chrom,pos,ref,alt}, ...]
