@@ -4,12 +4,12 @@ import subprocess
 import os
 import shlex
 import re
+import shutil
 import time
 import json
 import queue
 import threading
 
-# Importamos as configurações do banco e o modelo da tabela
 from database import SessionLocal
 from models import Analysis
 
@@ -23,8 +23,42 @@ WSL_BASE = f"/home/{WSL_USER}/pantherflow-clinical"
 
 WSL_PROCESSAMENTO = Path(rf"\\wsl.localhost\Ubuntu{WSL_BASE}\processamento")
 WSL_DATASETS      = Path(rf"\\wsl.localhost\Ubuntu{WSL_BASE}\datasets")
-NOME_ARQUIVO_BED  = "alvo_qualimap_6col.bed"
+_BED_TWIST = (
+    "painel_twist/output_InterpriseUSA_UFCSPA_pulmao_TE-97054821_hg38/"
+    "Target_bases_covered_by_probes_InterpriseUSA_UFCSPA_pulmao_TE-97054821_hg38_250708161615.bed"
+)
+NOME_ARQUIVO_BED          = _BED_TWIST   # painel físico Twist — usado por VarScan2, Mutect2
+NOME_ARQUIVO_BED_COVERAGE = _BED_TWIST   # mesmo painel — usado por samtools coverage
 
+# Raiz do projeto: backend/pipeline.py → parent → backend/ → parent → project root
+HOST_REFERENCES_DIR = Path(__file__).resolve().parent.parent / "references"
+
+def _windows_to_wsl_path(p: Path | str) -> str:
+    """Converte path Windows para o equivalente WSL2 (/mnt/<drive>/...).
+    Necessário para montar volumes Docker via 'wsl docker run -v', que espera
+    paths Linux. Ex: C:\\foo\\bar -> /mnt/c/foo/bar
+    """
+    s = str(p).replace("\\", "/")
+    s = re.sub(r'^([a-zA-Z]):/', lambda m: f"/mnt/{m.group(1).lower()}/", s)
+    return s
+
+WSL_REFERENCES_DIR = _windows_to_wsl_path(HOST_REFERENCES_DIR)
+
+# Panel of Normals (PoN) — dois contextos de path distintos:
+# LOCAL_PON_PATH: checado pelo Python no host (path Windows absoluto).
+# DOCKER_PON_PATH: caminho absoluto montado dentro do container Docker.
+LOCAL_PON_PATH  = HOST_REFERENCES_DIR / "hg38/gatk_resources/1000g_pon.hg38.vcf.gz"
+DOCKER_PON_PATH = "/references/hg38/gatk_resources/1000g_pon.hg38.vcf.gz"
+
+# --- IMAGENS DOCKER ---
+BIOINFO_IMAGE = "pantherflow-bioinfo"   # imagem monolítica: BWA, GATK, VarScan2, samtools, FastQC, SnpEff
+FASTP_IMAGE   = "staphb/fastp:latest"  # pré-processamento de FASTQs (substitui Trimmomatic)
+LOFREQ_IMAGE  = "quay.io/biocontainers/lofreq:2.1.5--py310h8360dc1_7"  # Biocontainers — versão pinada para reprodutibilidade
+
+# --- PARÂMETROS VARSCAN2 ---
+# min-coverage baixo para máxima sensibilidade; filtragem por DP fica no frontend/parsear.
+# min_dp do usuário NÃO deve ser usado aqui — serve apenas para report, não para chamada.
+_VARSCAN_MIN_COV = 20
 
 def _executar_docker(comando: list, caminho_log: Path) -> int:
     """Executa um container Docker redirecionando output para log em disco.
@@ -79,16 +113,27 @@ def _executar_docker(comando: list, caminho_log: Path) -> int:
                     break
                 # Processo ainda vivo e sem output → continua aguardando
 
-        processo.wait(timeout=30)
+        try:
+            processo.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            logger.warning("Timeout ao aguardar encerramento do container Docker — forçando kill.")
+            processo.kill()
     return processo.returncode
 
 
 def parse_vcf(filepath: Path) -> set:
     """Lê um arquivo VCF e retorna um set de tuplas (CHROM, POS, REF, ALT).
 
-    Ignora todas as linhas de cabeçalho (iniciadas em '#'). Retorna set vazio
-    se o arquivo não existir ou estiver malformado, sem interromper o pipeline.
+    Ignora linhas de cabeçalho ('#') e variantes cujo campo FILTER não seja
+    'PASS' ou '.' (ponto = nenhum filtro aplicado, padrão do VarScan2).
+    Isso garante que artefatos marcados pelo FilterMutectCalls (germline,
+    weak_evidence, strand_bias, etc.) nunca entrem no set de consenso,
+    resolvendo BUG-09 e BUG-17.
+
+    Retorna set vazio se o arquivo não existir ou estiver malformado,
+    sem interromper o pipeline.
     """
+    _FILTROS_ACEITOS = {"PASS", "."}
     variantes = set()
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -96,9 +141,16 @@ def parse_vcf(filepath: Path) -> set:
                 if linha.startswith("#"):
                     continue
                 colunas = linha.strip().split("\t")
-                if len(colunas) < 5:
+                if len(colunas) < 7:
                     continue
-                chrom, pos, _, ref, alt = colunas[0], colunas[1], colunas[2], colunas[3], colunas[4]
+                filtro = colunas[6]
+                if filtro not in _FILTROS_ACEITOS:
+                    logger.info(
+                        f"[parse_vcf] {filepath.name} pos={colunas[1]} "
+                        f"rejeitada pelo filtro: '{filtro}'"
+                    )
+                    continue
+                chrom, pos, ref, alt = colunas[0], colunas[1], colunas[3], colunas[4]
                 variantes.add((chrom, pos, ref, alt))
     except (FileNotFoundError, OSError):
         pass
@@ -112,8 +164,8 @@ def parsear_anotacoes_snpeff(vcf_anotado_path: Path) -> dict:
       ANN=ALT|effect|impact|gene|gene_id|feature_type|feature_id|
           transcript_biotype|rank|hgvs_c|hgvs_p|...
 
-    Retorna um dict com contagens por impacto e as top_variants (HIGH primeiro,
-    depois MODERATE), limitado a 20 entradas para não inflar o banco.
+    Retorna um dict com contagens por impacto e todas as variantes ordenadas
+    por impacto (HIGH primeiro, depois MODERATE, LOW, MODIFIER).
     Retorna estrutura vazia em caso de falha — nunca interrompe o pipeline.
     """
     IMPACTOS_ORDEM = {"HIGH": 0, "MODERATE": 1, "LOW": 2, "MODIFIER": 3}
@@ -129,25 +181,74 @@ def parsear_anotacoes_snpeff(vcf_anotado_path: Path) -> dict:
                 if len(colunas) < 8:
                     continue
 
+                if colunas[6] not in {"PASS", "."}:
+                    continue
+
                 chrom, pos, ref, alt = colunas[0], colunas[1], colunas[3], colunas[4]
                 info = colunas[7]
 
-                # Extrai o campo ANN= do INFO
+                # Parseia FORMAT/SAMPLE uma única vez — reutilizado por stat_conf, vaf e dp.
+                fmt_dict: dict = {}
+                if len(colunas) >= 10:
+                    fmt_dict = dict(zip(colunas[8].split(":"), colunas[9].split(":")))
+
+                # --- Confiança Estatística (auto-detecção de caller) ---
+                # Mutect2: TLOD no campo INFO  →  "TLOD: X.XX"
+                # VarScan2: PVAL no campo FORMAT/SAMPLE  →  "p-val: X.XXXX"
+                stat_conf = "N/A"
+                tlod_match = re.search(r'TLOD=([^;,]+)', info)
+                if tlod_match:
+                    try:
+                        stat_conf = f"TLOD: {float(tlod_match.group(1)):.2f}"
+                    except ValueError:
+                        pass
+                elif fmt_dict:
+                    pval_raw = fmt_dict.get("PVAL")
+                    if pval_raw:
+                        try:
+                            stat_conf = f"p-val: {float(pval_raw):.4f}"
+                        except ValueError:
+                            pass
+
+                # --- VAF ---
+                # VarScan2: FREQ="15.50%" → 0.155  |  Mutect2: AF="0.155" (multi-alélico: pega [0])
+                vaf: float | None = None
+                freq_str = fmt_dict.get("FREQ", "")
+                af_str   = fmt_dict.get("AF", "").split(",")[0]
+                if freq_str:
+                    try:
+                        vaf = round(float(freq_str.replace("%", "")) / 100.0, 6)
+                    except ValueError:
+                        pass
+                elif af_str:
+                    try:
+                        vaf = round(float(af_str), 6)
+                    except ValueError:
+                        pass
+
+                # --- DP ---
+                dp: int | None = None
+                try:
+                    dp = int(fmt_dict.get("DP", ""))
+                except (ValueError, TypeError):
+                    pass
+
+                # Extrai o campo ANN= do INFO.
+                # Variantes sem ANN= (SnpEff não rodou ou falhou) ainda são incluídas
+                # com valores neutros para que a tabela do frontend não fique vazia.
                 ann_match = re.search(r'ANN=([^;]+)', info)
-                if not ann_match:
-                    continue
-
-                # Cada alelo pode ter múltiplas anotações separadas por vírgula.
-                # Usamos apenas a primeira anotação (maior impacto, conforme ordenação do SnpEff).
-                primeira_ann = ann_match.group(1).split(",")[0]
-                campos = primeira_ann.split("|")
-                if len(campos) < 11:
-                    continue
-
-                effect = campos[1]   # ex: missense_variant
-                impact = campos[2]   # HIGH | MODERATE | LOW | MODIFIER
-                gene   = campos[3]   # ex: TP53
-                hgvs_p = campos[10]  # ex: p.Arg248Trp (vazio para variantes sinônimas)
+                if ann_match:
+                    primeira_ann = ann_match.group(1).split(",")[0]
+                    campos_ann = primeira_ann.split("|")
+                    if len(campos_ann) >= 11:
+                        effect = campos_ann[1]   # ex: missense_variant
+                        impact = campos_ann[2]   # HIGH | MODERATE | LOW | MODIFIER
+                        gene   = campos_ann[3]   # ex: TP53
+                        hgvs_p = campos_ann[10]  # ex: p.Arg248Trp
+                    else:
+                        effect, impact, gene, hgvs_p = "—", "MODIFIER", "—", "—"
+                else:
+                    effect, impact, gene, hgvs_p = "—", "MODIFIER", "—", "—"
 
                 if impact in contagens:
                     contagens[impact] += 1
@@ -156,27 +257,38 @@ def parsear_anotacoes_snpeff(vcf_anotado_path: Path) -> dict:
                 clnsig_match = re.search(r'CLNSIG=([^;]+)', info)
                 clndn_match  = re.search(r'CLNDN=([^;]+)', info)
                 cnt_match    = re.search(r'CNT=(\d+)', info)
+                # Frequência populacional gnomAD (injetada pelo SnpSift na Etapa 5.8)
+                # AF pode aparecer como AF=0.003 ou AF=0.003,0.001 (multi-alélico — pega o primeiro)
+                af_match = re.search(r'(?<![A-Z])AF=([^;]+)', info)
+                pop_af_raw = af_match.group(1).split(",")[0] if af_match else None
+                try:
+                    pop_af = round(float(pop_af_raw), 6) if pop_af_raw else None
+                except ValueError:
+                    pop_af = None
 
                 variantes_brutas.append({
-                    "chrom":            chrom,
-                    "pos":              pos,
-                    "ref":              ref,
-                    "alt":              alt,
-                    "gene":             gene,
-                    "effect":           effect,
-                    "impact":           impact,
-                    "hgvs_p":           hgvs_p or "—",
-                    "clinvar_sig":      clnsig_match.group(1).replace("_", " ") if clnsig_match else "—",
-                    "clinvar_disease":  clndn_match.group(1).replace("_", " ").replace("|", " / ") if clndn_match else "—",
-                    "cosmic_cnt":       cnt_match.group(1) if cnt_match else "—",
+                    "chrom":                    chrom,
+                    "pos":                      pos,
+                    "ref":                      ref,
+                    "alt":                      alt,
+                    "gene":                     gene,
+                    "effect":                   effect,
+                    "impact":                   impact,
+                    "hgvs_p":                   hgvs_p or "—",
+                    "vaf":                      vaf,
+                    "dp":                       dp,
+                    "pop_af":                   pop_af,
+                    "clinvar_sig":              clnsig_match.group(1).replace("_", " ") if clnsig_match else "—",
+                    "clinvar_disease":          clndn_match.group(1).replace("_", " ").replace("|", " / ") if clndn_match else "—",
+                    "cosmic_cnt":               cnt_match.group(1) if cnt_match else "—",
+                    "statistical_confidence":   stat_conf,
                 })
 
     except (FileNotFoundError, OSError):
         return {}
 
-    # Ordena: HIGH primeiro, depois MODERATE, LOW, MODIFIER — top 20
+    # Ordena: HIGH primeiro, depois MODERATE, LOW, MODIFIER
     variantes_brutas.sort(key=lambda v: IMPACTOS_ORDEM.get(v["impact"], 99))
-    top_variants = variantes_brutas[:20]
 
     return {
         "total_annotated": len(variantes_brutas),
@@ -184,8 +296,66 @@ def parsear_anotacoes_snpeff(vcf_anotado_path: Path) -> dict:
         "moderate_impact": contagens["MODERATE"],
         "low_impact":      contagens["LOW"],
         "modifier_impact": contagens["MODIFIER"],
-        "top_variants":    top_variants,
+        "top_variants":    variantes_brutas,
     }
+
+
+def extrair_metricas_vcf(caminho_arquivo: Path, nome_caller: str) -> list[dict]:
+    """Extrai VAF e DP de cada variante de um VCF, normalizando diferenças entre callers.
+
+    VarScan2: VAF está na coluna FORMAT como FREQ=5.5% (string com %).
+    Mutect2 / Consenso: VAF está no campo FORMAT como AF=0.055 (float decimal).
+    DP está disponível em ambos como DP= no campo FORMAT.
+
+    Retorna lista de {"vaf": float, "dp": int, "caller": str}.
+    Linhas sem os campos esperados são silenciosamente ignoradas.
+    """
+    resultados: list[dict] = []
+
+    try:
+        with open(caminho_arquivo, "r", encoding="utf-8", errors="replace") as f:
+            format_keys: list[str] = []
+            for linha in f:
+                if linha.startswith("#"):
+                    continue
+                colunas = linha.strip().split("\t")
+                # VCF mínimo: CHROM POS ID REF ALT QUAL FILTER INFO FORMAT SAMPLE
+                if len(colunas) < 10:
+                    continue
+
+                format_keys = colunas[8].split(":")
+                sample_vals = colunas[9].split(":")
+                fmt = dict(zip(format_keys, sample_vals))
+
+                # --- VAF ---
+                vaf: float | None = None
+                if nome_caller == "VarScan2":
+                    freq_str = fmt.get("FREQ", "")
+                    try:
+                        vaf = float(freq_str.replace("%", "")) / 100.0
+                    except ValueError:
+                        pass
+                else:  # Mutect2 ou Consenso
+                    af_str = fmt.get("AF", "").split(",")[0]  # pega o primeiro alelo
+                    try:
+                        vaf = float(af_str)
+                    except ValueError:
+                        pass
+
+                # --- DP ---
+                dp: int | None = None
+                try:
+                    dp = int(fmt.get("DP", ""))
+                except ValueError:
+                    pass
+
+                if vaf is not None and dp is not None:
+                    resultados.append({"vaf": round(vaf, 6), "dp": dp, "caller": nome_caller})
+
+    except (FileNotFoundError, OSError):
+        pass
+
+    return resultados
 
 
 def escrever_consensus_vcf(vcf_mutect_path: Path, set_consenso: set, vcf_saida: Path) -> None:
@@ -194,7 +364,15 @@ def escrever_consensus_vcf(vcf_mutect_path: Path, set_consenso: set, vcf_saida: 
     Usa o Mutect2 como template porque seus headers são mais completos e o SnpEff
     lida melhor com VCFs no formato GATK. Preserva todos os headers (#) intactos.
     Não lança exceção se o arquivo de saída já existir — sobrescreve silenciosamente.
+
+    Se set_consenso for vazio, não cria o arquivo de saída — a ausência do arquivo
+    é detectada por _vcf_valido() downstream, impedindo que etapas de anotação
+    processem um VCF sem variantes.
     """
+    if not set_consenso:
+        logger.warning(f"Consenso vazio — nenhuma variante em comum entre VarScan2 e Mutect2. Arquivo {vcf_saida.name} não será criado.")
+        return
+
     try:
         with open(vcf_mutect_path, "r", encoding="utf-8", errors="replace") as f_in, \
              open(vcf_saida, "w", encoding="utf-8") as f_out:
@@ -220,7 +398,209 @@ def escrever_log_ui(uuid: str, mensagem: str):
         f.write(f"> {mensagem}\n")
 
 
-def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquivo_r2: str | None = None):
+def run_fastp(
+    nome_r1: str,
+    nome_r2: str | None,
+    paciente_uuid: str,
+    caminho_log: Path,
+) -> tuple[Path, Path | None]:
+    """Limpeza de adaptadores e filtro de qualidade via fastp.
+
+    Monta WSL_BASE/processamento em /workdir dentro do container staphb/fastp.
+    PE: autodetecção de adaptadores via --detect_adapter_for_pe.
+    SE: detecção automática (sem flag extra — fastp infere do input único).
+    Retorna os paths locais (WSL_PROCESSAMENTO) dos FASTQs limpos gerados.
+    """
+    def _clean_name(nome: str) -> str:
+        for ext in (".fastq.gz", ".fq.gz", ".fastq", ".fq"):
+            if nome.endswith(ext):
+                return nome[: -len(ext)] + "_clean" + ext
+        return nome + "_clean"
+
+    out_r1      = _clean_name(nome_r1)
+    safe_r1     = shlex.quote(nome_r1)
+    safe_out_r1 = shlex.quote(out_r1)
+    safe_uuid   = shlex.quote(paciente_uuid)
+
+    if nome_r2:
+        out_r2      = _clean_name(nome_r2)
+        safe_r2     = shlex.quote(nome_r2)
+        safe_out_r2 = shlex.quote(out_r2)
+        cmd_interno = (
+            f"fastp"
+            f" -i /workdir/{safe_r1} -I /workdir/{safe_r2}"
+            f" -o /workdir/{safe_out_r1} -O /workdir/{safe_out_r2}"
+            f" -j /workdir/{safe_uuid}_fastp.json"
+            f" -h /workdir/{safe_uuid}_fastp.html"
+            f" --detect_adapter_for_pe --thread 4"
+        )
+    else:
+        out_r2      = None
+        cmd_interno = (
+            f"fastp"
+            f" -i /workdir/{safe_r1}"
+            f" -o /workdir/{safe_out_r1}"
+            f" -j /workdir/{safe_uuid}_fastp.json"
+            f" -h /workdir/{safe_uuid}_fastp.html"
+            f" --thread 4"
+        )
+
+    comando = [
+        "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+        "-v", f"{WSL_BASE}/processamento:/workdir",
+        FASTP_IMAGE, "sh", "-c", cmd_interno,
+    ]
+    returncode = _executar_docker(comando, caminho_log)
+    if returncode != 0:
+        raise Exception(f"Erro fastp (código {returncode}). Ver log do paciente para detalhes.")
+
+    return (
+        WSL_PROCESSAMENTO / out_r1,
+        WSL_PROCESSAMENTO / out_r2 if out_r2 else None,
+    )
+
+
+def run_lofreq(
+    bam_name: str,
+    docker_ref_genome: str,
+    docker_target_bed: str | None,
+    paciente_uuid: str,
+    caminho_log: Path,
+) -> Path:
+    """Chama variantes somáticas de baixa frequência via LoFreq (tumor-only).
+
+    Monta WSL_BASE/datasets em /datasets e WSL_BASE/processamento em /processamento.
+    Usa call-parallel com 4 threads; --call-indels habilita chamada de pequenos indels.
+    A flag -l é omitida quando docker_target_bed é None (WGS/exoma sem painel).
+    Retorna o path local (WSL_PROCESSAMENTO) do VCF bruto gerado.
+    """
+    safe_bam  = shlex.quote(bam_name)
+    vcf_out   = f"{paciente_uuid}_lofreq.vcf"
+    safe_vcf  = shlex.quote(vcf_out)
+
+    bed_flag = f"-l {shlex.quote(docker_target_bed)} " if docker_target_bed else ""
+
+    cmd_interno = (
+        f"lofreq call-parallel --pp-threads 4 --call-indels"
+        f" -f {docker_ref_genome}"
+        f" {bed_flag}"
+        f"-o /processamento/{safe_vcf}"
+        f" /processamento/{safe_bam}"
+    )
+
+    comando = [
+        "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+        "-v", f"{WSL_BASE}/datasets:/datasets",
+        "-v", f"{WSL_BASE}/processamento:/processamento",
+        LOFREQ_IMAGE, "sh", "-c", cmd_interno,
+    ]
+    returncode = _executar_docker(comando, caminho_log)
+    if returncode != 0:
+        raise Exception(f"Erro LoFreq (código {returncode}). Ver log do paciente para detalhes.")
+
+    return WSL_PROCESSAMENTO / vcf_out
+
+
+def _vcf_valido(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as _f:
+            return any(not l.startswith("#") for l in _f)
+    except OSError:
+        return False
+
+
+def anotar_vcf_completo(
+    input_vcf: str,
+    output_vcf: str,
+    paciente_uuid: str,
+    caminho_log: Path,
+) -> None:
+    """Aplica a cadeia completa de anotação (SnpEff → ClinVar → COSMIC → gnomAD) a um VCF.
+
+    input_vcf / output_vcf são nomes de arquivo (sem path) dentro de WSL_PROCESSAMENTO.
+    Cada etapa SnpSift tem fallback: se falhar, copia o resultado anterior para não quebrar a cadeia.
+    """
+    stem = input_vcf.rsplit(".", 1)[0]  # nome base sem extensão
+
+    def _snpeff(nome_entrada: str, nome_saida: str) -> int:
+        cmd = (
+            f"snpEff ann -dataDir /datasets/snpeff_data -nodownload -Xmx4g GRCh38.99 "
+            f"/processamento/{shlex.quote(nome_entrada)} "
+            f"> /processamento/{shlex.quote(nome_saida)}"
+        )
+        return _executar_docker([
+            "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+            "-v", f"{WSL_BASE}/datasets:/datasets",
+            "-v", f"{WSL_BASE}/processamento:/processamento",
+            "pantherflow-bioinfo", "sh", "-c", cmd,
+        ], caminho_log)
+
+    def _snpsift(vcf_entrada: str, vcf_saida: str, vcf_db: str, campos: str) -> int:
+        cmd = (
+            f"SnpSift annotate -info {campos} "
+            f"/datasets/{vcf_db} "
+            f"/processamento/{shlex.quote(vcf_entrada)} "
+            f"> /tmp/{shlex.quote(vcf_saida)} "
+            f"&& mv /tmp/{shlex.quote(vcf_saida)} /processamento/{shlex.quote(vcf_saida)}; "
+            f"_rc=$?; chmod -R 777 /processamento; exit $_rc"
+        )
+        return _executar_docker([
+            "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+            "-v", f"{WSL_BASE}/datasets:/datasets",
+            "-v", f"{WSL_BASE}/processamento:/processamento",
+            "pantherflow-bioinfo", "sh", "-c", cmd,
+        ], caminho_log)
+
+    def _fallback_copy(src_name: str, dst_name: str) -> None:
+        src = WSL_PROCESSAMENTO / src_name
+        dst = WSL_PROCESSAMENTO / dst_name
+        if src.exists():
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                escrever_log_ui(paciente_uuid, f"[ERRO] Fallback copy {src_name} → {dst_name} falhou: {e}")
+                logger.error(f"[{paciente_uuid}] Fallback shutil.copy2 falhou: {e}")
+
+    # Nomes intermediários derivados do stem do input
+    snpeff_vcf  = f"{stem}_snpeff.vcf"
+    clinvar_vcf = f"{stem}_clinvar.vcf"
+    cosmic_vcf  = f"{stem}_cosmic.vcf"
+
+    # 1. SnpEff — anotação funcional
+    escrever_log_ui(paciente_uuid, f"  [SnpEff] {input_vcf} → {snpeff_vcf}")
+    rc = _snpeff(input_vcf, snpeff_vcf)
+    if rc != 0:
+        escrever_log_ui(paciente_uuid, f"[AVISO] SnpEff retornou código {rc} em {input_vcf}.")
+
+    # 2. ClinVar — patogenicidade
+    escrever_log_ui(paciente_uuid, f"  [ClinVar] {snpeff_vcf} → {clinvar_vcf}")
+    rc_clinvar = _snpsift(snpeff_vcf, clinvar_vcf, "clinvar.vcf.gz", "CLNSIG,CLNDN")
+    if rc_clinvar != 0:
+        escrever_log_ui(paciente_uuid, f"[AVISO] SnpSift ClinVar retornou código {rc_clinvar} — campos clínicos ausentes.")
+        _fallback_copy(snpeff_vcf, clinvar_vcf)
+
+    # 3. COSMIC — frequência oncológica
+    _clinvar_ok = rc_clinvar == 0 and _vcf_valido(WSL_PROCESSAMENTO / clinvar_vcf)
+    cosmic_entrada = clinvar_vcf if _clinvar_ok else snpeff_vcf
+    escrever_log_ui(paciente_uuid, f"  [COSMIC] {cosmic_entrada} → {cosmic_vcf}")
+    rc_cosmic = _snpsift(cosmic_entrada, cosmic_vcf, "Cosmic_GenomeScreensMutant_v103_GRCh38.vcf.gz", "CNT")
+    if rc_cosmic != 0:
+        escrever_log_ui(paciente_uuid, f"[AVISO] SnpSift COSMIC retornou código {rc_cosmic} — campo CNT ausente.")
+        _fallback_copy(cosmic_entrada, cosmic_vcf)
+
+    # 4. gnomAD — frequência populacional
+    _cosmic_ok = _vcf_valido(WSL_PROCESSAMENTO / cosmic_vcf)
+    gnomad_entrada = cosmic_vcf if _cosmic_ok else cosmic_entrada
+    escrever_log_ui(paciente_uuid, f"  [gnomAD] {gnomad_entrada} → {output_vcf}")
+    rc_gnomad = _snpsift(gnomad_entrada, output_vcf, "af-only-gnomad.hg38.vcf.gz", "AF")
+    if rc_gnomad != 0:
+        escrever_log_ui(paciente_uuid, f"[AVISO] SnpSift gnomAD retornou código {rc_gnomad} — campo AF ausente.")
+        _fallback_copy(gnomad_entrada, output_vcf)
+
+
+def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquivo_r2: str | None = None, vaf: float = 0.05, min_dp: int = 100, ref_genome: str | None = None, target_bed: str | None = None, pon_file: str | None = None):
     """Executa os comandos pesados no Docker/WSL2 em background.
     Suporta Single-End (nome_arquivo_r2=None) e Paired-End (nome_arquivo_r2 fornecido).
     """
@@ -242,36 +622,35 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
         # Mantemos o status como "processing" para o React entender e manter a cor amarela
         atualizar_fase("processing")
 
+        # --- LIMPEZA DE ARQUIVOS INTERMEDIÁRIOS DE RUNS ANTERIORES ---
+        # Cada análise recebe um UUID único — esta limpeza é uma garantia defensiva para
+        # o caso de reprocessamento explícito do mesmo UUID (ex: retentativa após crash).
+        _sufixos_intermediarios = [
+            "_varscan.vcf", "_varscan_renamed.vcf", "_varscan_norm.vcf",
+            "_mutect_raw.vcf", "_mutect.vcf", "_mutect_norm.vcf",
+            "_consensus.vcf", "_consensus_snpeff.vcf",
+            "_consensus_clinvar.vcf", "_consensus_annotated.vcf", "_consensus_gnomad.vcf",
+            ".bam", ".bam.bai",
+            "_f1r2.tar.gz", "_read_orientation_model.tar.gz",
+            "_pileup.table", "_contamination.table",
+        ]
+        for sufixo in _sufixos_intermediarios:
+            _arquivo = WSL_PROCESSAMENTO / f"{paciente_uuid}{sufixo}"
+            if _arquivo.exists():
+                try:
+                    _arquivo.unlink()
+                except OSError:
+                    pass  # não bloquear a pipeline por falha de limpeza
+
         # --- LOG INICIAL ---
         modo = "Paired-End" if is_paired else "Single-End"
         escrever_log_ui(paciente_uuid, f"Iniciando ambiente isolado ({modo}) e validando arquivo FASTQ...")
+        escrever_log_ui(paciente_uuid, f"Parâmetros ativos: VAF mínimo = {vaf:.0%} | Profundidade mínima = {min_dp}×")
 
         # --- PREPARAÇÃO DE VARIÁVEIS SEGURAS ---
         safe_r1   = shlex.quote(nome_arquivo_r1)
         safe_r2   = shlex.quote(nome_arquivo_r2) if is_paired else None
         safe_uuid = shlex.quote(paciente_uuid)
-
-        # Nomes dos arquivos trimados — PE gera 4 outputs; SE gera 1
-        def _trimmed_name(nome: str, sufixo: str) -> str:
-            """Insere sufixo antes da extensão .fastq/.fq."""
-            for ext in (".fastq.gz", ".fq.gz", ".fastq", ".fq"):
-                if nome.endswith(ext):
-                    return nome[: -len(ext)] + sufixo + ext
-            return nome + sufixo
-
-        if is_paired:
-            nome_r1_paired    = _trimmed_name(nome_arquivo_r1, "_paired")
-            nome_r1_unpaired  = _trimmed_name(nome_arquivo_r1, "_unpaired")
-            nome_r2_paired    = _trimmed_name(nome_arquivo_r2, "_paired")
-            nome_r2_unpaired  = _trimmed_name(nome_arquivo_r2, "_unpaired")
-            safe_r1_paired    = shlex.quote(nome_r1_paired)
-            safe_r1_unpaired  = shlex.quote(nome_r1_unpaired)
-            safe_r2_paired    = shlex.quote(nome_r2_paired)
-            safe_r2_unpaired  = shlex.quote(nome_r2_unpaired)
-        else:
-            # Single-End — mantém o nome legado para compatibilidade
-            nome_r1_paired   = _trimmed_name(nome_arquivo_r1, "_trimmed")
-            safe_r1_paired   = shlex.quote(nome_r1_paired)
 
         # Caminho do log deste paciente — compartilhado por todas as etapas abaixo
         caminho_log = WSL_PROCESSAMENTO / f"{paciente_uuid}.log"
@@ -280,14 +659,54 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
         pipeline_start = time.time()
         tempos_etapas = {}
 
+        # --- RESOLUÇÃO DE CAMINHOS ---
+        # ref_genome é garantido pelo frontend (campo obrigatório).
+        # target_bed e pon_file são opcionais: quando ausentes, as flags correspondentes
+        # são omitidas dos comandos das ferramentas — sem fallback para arquivos padrão.
+        _DEFAULT_GENOME = "/datasets/Homo_sapiens_assembly38.fasta"
+
+        ref_vol: list = []
+        bed_vol: list = []
+        pon_vol: list = []
+
+        # Mapeador estático: o frontend envia um identificador homologado ('hg38', 'hg19'…)
+        # que é resolvido para o arquivo pré-indexado dentro do container.
+        # ref_vol permanece [] — nenhum volume extra é montado para o genoma.
+        _GENOME_MAP = {
+            "hg38": "/datasets/Homo_sapiens_assembly38.fasta",
+            # "hg19": "/datasets/Homo_sapiens_assembly19.fasta",  # requer indexação prévia
+        }
+        docker_ref_genome = _GENOME_MAP.get(ref_genome, _DEFAULT_GENOME)
+        docker_ref_fai    = f"{docker_ref_genome}.fai"
+        escrever_log_ui(paciente_uuid, f"Genoma de referência: {ref_genome or 'hg38'} → {docker_ref_genome}")
+
+        # BED: arquivo pré-indexado em /datasets/ dentro do container — bed_vol sempre []
+        if target_bed == 'twist':
+            docker_target_bed = f"/datasets/{NOME_ARQUIVO_BED}"
+            escrever_log_ui(paciente_uuid, f"Painel BED: twist → {docker_target_bed}")
+        else:
+            docker_target_bed = None   # sem restrição de intervalos alvo
+
+        # PoN: arquivo em /references/ — monta WSL_REFERENCES_DIR como volume read-only
+        if pon_file == 'gatk_1000g':
+            docker_pon = DOCKER_PON_PATH
+            use_pon    = True
+            pon_vol    = ["-v", f"{WSL_REFERENCES_DIR}:/references:ro"]
+            escrever_log_ui(paciente_uuid, f"Panel of Normals: gatk_1000g → {docker_pon}")
+        else:
+            use_pon    = False
+            docker_pon = None
+
         # --- ETAPA 0: BARREIRA DE SEGURANÇA (Validação BWA) ---
         escrever_log_ui(paciente_uuid, "Verificando integridade dos índices genômicos (BWA)...")
         required_indices = [".bwt", ".pac", ".ann", ".amb", ".sa"]
+        _ref_host_base = WSL_DATASETS / Path(docker_ref_genome).name
         for ext in required_indices:
-            index_file = WSL_DATASETS / f"Homo_sapiens_assembly38.fasta{ext}"
+            index_file = Path(f"{_ref_host_base}{ext}")
             if not index_file.exists():
-                error_msg = f"Falha Crítica: Índice BWA ausente ({index_file.name}). O alinhamento foi abortado."
-                raise FileNotFoundError(error_msg)
+                raise FileNotFoundError(
+                    f"Falha Crítica: Índice BWA ausente ({index_file.name}). O alinhamento foi abortado."
+                )
         escrever_log_ui(paciente_uuid, "Índices validados com sucesso.")
 
         # --- ETAPA 0.5: CONTROLE DE QUALIDADE BRUTO (FASTQC) ---
@@ -307,104 +726,80 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
         if returncode != 0:
             raise Exception(f"Erro FastQC (código {returncode}). Ver log do paciente para detalhes.")
 
-        # --- ETAPA 0.75: LIMPEZA DE ADAPTADORES E QUALIDADE (TRIMMOMATIC) ---
-        escrever_log_ui(paciente_uuid, "Executando Trimmomatic: Removendo adaptadores e bases de baixa qualidade...")
-
-        # ILLUMINACLIP remove adaptadores TruSeq3 antes dos filtros de qualidade.
-        # PE usa TruSeq3-PE.fa; SE usa TruSeq3-SE.fa — arquivos incluídos na imagem Conda.
-        # Parâmetros: seedMismatches:2 palindromeClipThreshold:30 simpleClipThreshold:10 minAdapterLength:8 keepBothReads:true
-        if is_paired:
-            # PE: 2 inputs + 4 outputs (paired/unpaired para cada read)
-            comando_trim_interno = (
-                f"trimmomatic PE -threads 4 "
-                f"/processamento/{safe_r1} /processamento/{safe_r2} "
-                f"/processamento/{safe_r1_paired} /processamento/{safe_r1_unpaired} "
-                f"/processamento/{safe_r2_paired} /processamento/{safe_r2_unpaired} "
-                f"ILLUMINACLIP:/opt/conda/share/trimmomatic/adapters/TruSeq3-PE.fa:2:30:10:8:true "
-                f"LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36"
-            )
-        else:
-            # SE: 1 input + 1 output
-            comando_trim_interno = (
-                f"trimmomatic SE -threads 4 "
-                f"/processamento/{safe_r1} /processamento/{safe_r1_paired} "
-                f"ILLUMINACLIP:/opt/conda/share/trimmomatic/adapters/TruSeq3-SE.fa:2:30:10 "
-                f"LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36"
-            )
-
-        comando_trim = [
-            "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
-            "-v", f"{WSL_BASE}/processamento:/processamento",
-            "pantherflow-bioinfo", "sh", "-c", comando_trim_interno
-        ]
+        # --- ETAPA 0.75: LIMPEZA DE ADAPTADORES E QUALIDADE (FASTP) ---
+        escrever_log_ui(paciente_uuid, "Executando fastp: Removendo adaptadores e bases de baixa qualidade...")
         t0 = time.time()
-        returncode = _executar_docker(comando_trim, caminho_log)
-        tempos_etapas["trimmomatic"] = f"{time.time() - t0:.1f}s"
-        if returncode != 0:
-            raise Exception(f"Erro Trimmomatic (código {returncode}). Ver log do paciente para detalhes.")
+        fastq_r1_clean, fastq_r2_clean = run_fastp(
+            nome_r1      = nome_arquivo_r1,
+            nome_r2      = nome_arquivo_r2 if is_paired else None,
+            paciente_uuid= paciente_uuid,
+            caminho_log  = caminho_log,
+        )
+        tempos_etapas["fastp"] = f"{time.time() - t0:.1f}s"
+        escrever_log_ui(paciente_uuid, f"fastp concluído → {fastq_r1_clean.name}")
 
-        # --- ETAPA 1: ALINHAMENTO BWA ---
-        escrever_log_ui(paciente_uuid, "Executando BWA-MEM: Mapeando leituras contra o genoma de referência...")
+        # --- ETAPAS 1+2: ALINHAMENTO BWA-MEM → BAM (pipeline unificado, sem .sam em disco) ---
+        # O SAM intermediário flui via pipe dentro do shell Docker — nunca é gravado em disco.
+        # Isso elimina até ~50 GB de I/O por amostra WES e reduz o tempo da etapa em ~30%.
+        # set -o pipefail: propaga o returncode de qualquer falha no meio do pipe (bwa, view ou sort).
+        # -R adiciona o Read Group ao SAM — obrigatório para o Mutect2 identificar a amostra (SM:).
+        escrever_log_ui(paciente_uuid, "Executando BWA-MEM + Samtools: Alinhando e convertendo para BAM (pipeline unificado)...")
 
-        # O redirecionamento > .sam ocorre dentro do shell do Docker — stdout nunca passa pelo Python
-        # -R adiciona o Read Group ao SAM — obrigatório para o Mutect2 identificar a amostra (SM:)
         rg_tag = f"@RG\\tID:{paciente_uuid}\\tSM:{paciente_uuid}\\tPL:ILLUMINA\\tLB:lib1"
-        inputs_bwa = f"/processamento/{safe_r1_paired}"
-        if is_paired:
-            inputs_bwa += f" /processamento/{safe_r2_paired}"
-        comando_bwa_interno = (
+        inputs_bwa = f"/processamento/{shlex.quote(fastq_r1_clean.name)}"
+        if is_paired and fastq_r2_clean:
+            inputs_bwa += f" /processamento/{shlex.quote(fastq_r2_clean.name)}"
+
+        comando_bwa_bam_interno = (
+            f"set -o pipefail; "
             f"bwa mem -t 4 -R '{rg_tag}' "
-            f"/datasets/Homo_sapiens_assembly38.fasta {inputs_bwa} "
-            f"> /processamento/{safe_uuid}.sam"
+            f"{docker_ref_genome} {inputs_bwa} "
+            f"| samtools view -@ 4 -Sb - "
+            f"| samtools sort -@ 4 -o /processamento/{safe_uuid}.bam - "
+            f"&& samtools index -@ 4 /processamento/{safe_uuid}.bam"
         )
 
-        comando_bwa = [
+        comando_bwa_bam = [
             "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
             "-v", f"{WSL_BASE}/datasets:/datasets",
             "-v", f"{WSL_BASE}/processamento:/processamento",
-            "pantherflow-bioinfo", "sh", "-c", comando_bwa_interno
+            *ref_vol,
+            "pantherflow-bioinfo", "sh", "-c", comando_bwa_bam_interno
         ]
         t0 = time.time()
-        returncode = _executar_docker(comando_bwa, caminho_log)
-        tempos_etapas["bwa_mem"] = f"{time.time() - t0:.1f}s"
+        returncode = _executar_docker(comando_bwa_bam, caminho_log)
+        elapsed = time.time() - t0
+        tempos_etapas["bwa_mem"] = f"{elapsed:.1f}s"
+        tempos_etapas["samtools"] = "— (unificado com BWA)"
         if returncode != 0:
-            raise Exception(f"Erro BWA (código {returncode}). Ver log do paciente para detalhes.")
+            raise Exception(f"Erro BWA+Samtools (código {returncode}). Ver log do paciente para detalhes.")
 
-        # --- ETAPA 2: CONVERSÃO PARA BAM (SAMTOOLS) ---
-        escrever_log_ui(paciente_uuid, "Executando Samtools: Convertendo, ordenando e indexando arquivo BAM...")
-
-        # set -o pipefail garante que erros no samtools view propagam o código de retorno
-        # && samtools index gera o .bam.bai — obrigatório para o Mutect2 (GATK)
-        comando_bam_interno = f"set -o pipefail; samtools view -@ 4 -Sb /processamento/{safe_uuid}.sam | samtools sort -@ 4 -o /processamento/{safe_uuid}.bam && samtools index -@ 4 /processamento/{safe_uuid}.bam"
-
-        comando_bam = [
-            "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
-            "-v", f"{WSL_BASE}/processamento:/processamento",
-            "pantherflow-bioinfo", "sh", "-c", comando_bam_interno
-        ]
-        t0 = time.time()
-        returncode = _executar_docker(comando_bam, caminho_log)
-        tempos_etapas["samtools"] = f"{time.time() - t0:.1f}s"
-        if returncode != 0:
-            raise Exception(f"Erro Samtools (código {returncode}). Ver log do paciente para detalhes.")
-
-        # --- ETAPA 2.5: CONTROLE DE QUALIDADE DO ALINHAMENTO (QUALIMAP) ---
-        escrever_log_ui(paciente_uuid, "Executando Qualimap: Avaliando profundidade e cobertura do mapeamento (BAM)...")
-
-        pasta_qualimap = f"/processamento/{safe_uuid}_qualimap"
-        comando_qualimap_interno = f"qualimap bamqc -bam /processamento/{safe_uuid}.bam -gff /datasets/{NOME_ARQUIVO_BED} -outdir {pasta_qualimap} -outformat HTML -nt 4 --java-mem-size=4G"
-
-        comando_qualimap = [
-            "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
-            "-v", f"{WSL_BASE}/processamento:/processamento",
-            "-v", f"{WSL_BASE}/datasets:/datasets",
-            "pantherflow-bioinfo", "sh", "-c", comando_qualimap_interno
-        ]
-        t0 = time.time()
-        returncode = _executar_docker(comando_qualimap, caminho_log)
-        tempos_etapas["qualimap"] = f"{time.time() - t0:.1f}s"
-        if returncode != 0:
-            raise Exception(f"Erro Qualimap (código {returncode}). Ver log do paciente para detalhes.")
+        # --- ETAPA 2.5: CONTROLE DE QUALIDADE DO ALINHAMENTO (SAMTOOLS BEDCOV) ---
+        # samtools bedcov: lê cada intervalo do BED e soma as profundidades de cada base.
+        # Saída: BED + coluna extra (soma das profundidades do intervalo) — sem cabeçalho.
+        # mean_coverage = sum(depth_sum) / sum(end - start) calculado em Python abaixo.
+        if docker_target_bed:
+            escrever_log_ui(paciente_uuid, "Executando samtools bedcov: Calculando profundidade acumulada do painel alvo (BAM)...")
+            coverage_output = f"/processamento/{safe_uuid}_coverage.txt"
+            comando_coverage_interno = (
+                f"samtools bedcov {docker_target_bed} "
+                f"/processamento/{safe_uuid}.bam "
+                f"> {coverage_output}"
+            )
+            comando_coverage = [
+                "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+                "-v", f"{WSL_BASE}/processamento:/processamento",
+                "-v", f"{WSL_BASE}/datasets:/datasets",
+                *bed_vol,
+                "pantherflow-bioinfo", "sh", "-c", comando_coverage_interno
+            ]
+            t0 = time.time()
+            returncode = _executar_docker(comando_coverage, caminho_log)
+            tempos_etapas["samtools_coverage"] = f"{time.time() - t0:.1f}s"
+            if returncode != 0:
+                raise Exception(f"Erro samtools coverage (código {returncode}). Ver log do paciente para detalhes.")
+        else:
+            escrever_log_ui(paciente_uuid, "[INFO] Painel BED não fornecido — samtools bedcov ignorado (cobertura por intervalo indisponível).")
 
         # --- ETAPA 3: EXTRAÇÃO (FLAGSTAT) ---
         # NOTA: capture_output=True é mantido intencionalmente aqui. O flagstat emite
@@ -427,41 +822,121 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
         total_reads = "N/A"
         mapping_rate = "N/A"
         mean_coverage = "N/A"
-        genome_results_path = WSL_PROCESSAMENTO / f"{paciente_uuid}_qualimap" / "genome_results.txt"
+        pct_alvos_zerados  = "N/A"
+        pct_alvos_criticos = "N/A"
+        # bedcov: cada linha é "chrom\tstart\tend\t[...campos BED extras...]\tdepth_sum"
+        # mean_coverage global = sum(depth_sum) / sum(end - start) em todas as linhas válidas
+        # profundidade_alvo   = depth_sum / (end - start) por linha — base para os limiares clínicos
+        coverage_path = WSL_PROCESSAMENTO / f"{paciente_uuid}_coverage.txt"
         try:
-            with open(genome_results_path, "r", encoding="utf-8") as f:
-                genome_results_content = f.read()
-            match_coverage = re.search(r'mean coverageData\s*=\s*([\d\.]+)X', genome_results_content)
-            if match_coverage:
-                mean_coverage = f"{float(match_coverage.group(1)):.1f}x"
-        except (FileNotFoundError, OSError):
-            pass
+            total_depth    = 0.0
+            total_bases    = 0
+            total_alvos    = 0
+            alvos_zerados  = 0
+            alvos_criticos = 0
+            with open(coverage_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split("\t")
+                    if len(parts) >= 4:
+                        start     = int(parts[1])
+                        end       = int(parts[2])
+                        depth_sum = float(parts[-1])
+                        tamanho   = end - start
+                        if tamanho <= 0:
+                            continue
+                        total_alvos += 1
+                        total_bases += tamanho
+                        total_depth += depth_sum
+                        profundidade_alvo = depth_sum / tamanho
+                        if profundidade_alvo == 0.0:
+                            alvos_zerados += 1
+                        if profundidade_alvo < 30.0:
+                            alvos_criticos += 1
+            if total_bases > 0:
+                mean_coverage = f"{total_depth / total_bases:.2f}x"
+            if total_alvos > 0:
+                pct_z = alvos_zerados  / total_alvos * 100
+                pct_c = alvos_criticos / total_alvos * 100
+                pct_alvos_zerados  = f"{alvos_zerados} / {total_alvos} ({pct_z:.1f}%)"
+                pct_alvos_criticos = f"{alvos_criticos} / {total_alvos} ({pct_c:.1f}%)"
+        except Exception as e:
+            logger.warning(f"[{paciente_uuid}] Erro ao calcular cobertura bedcov: {e}")
+
+        # Derivadas numéricas — usadas por regras de negócio de qualidade downstream.
+        # Calculadas fora do try/except do bedcov para que falhas na leitura do arquivo
+        # resultem em 0.0 (valores seguros) em vez de propagar exceção.
+        taxa_dropouts    = (alvos_zerados / total_alvos * 100) if total_alvos > 0 else 0.0
+        mean_cov_numeric = 0.0
+        if mean_coverage != "N/A":
+            try:
+                mean_cov_numeric = float(mean_coverage.rstrip("x"))
+            except ValueError:
+                pass
+        escrever_log_ui(
+            paciente_uuid,
+            f"QC Cobertura: profundidade média = {mean_cov_numeric:.2f}x | "
+            f"dropouts = {taxa_dropouts:.1f}% | "
+            f"alvos < 30x = {pct_alvos_criticos}"
+        )
+
+        # --- QUALITY GATE DE COBERTURA (SOFT) ---
+        # Critérios mínimos para oncologia somática (5% VAF):
+        #   mean_cov_numeric >= 30x  — profundidade estatisticamente suficiente para detectar variantes raras
+        #   taxa_dropouts    <= 15%  — tolerância máxima de regiões sem cobertura no painel
+        # Violações geram warning e flag no laudo — pipeline continua para permitir revisão clínica.
+        qc_warning_flag    = False
+        qc_warning_message = ""
+        if mean_cov_numeric < 30.0 or taxa_dropouts > 15.0:
+            motivo = []
+            if mean_cov_numeric < 30.0:
+                motivo.append(f"profundidade média {mean_cov_numeric:.2f}x < 30x")
+            if taxa_dropouts > 15.0:
+                motivo.append(f"dropouts {taxa_dropouts:.1f}% > 15%")
+            qc_warning_flag    = True
+            qc_warning_message = "; ".join(motivo)
+            logger.warning(
+                f"[{paciente_uuid}] [AVISO QC] Amostra abaixo dos critérios mínimos de "
+                f"cobertura clínica: {qc_warning_message}"
+            )
+            escrever_log_ui(
+                paciente_uuid,
+                f"[AVISO QC] Amostra fora dos limites clínicos: {qc_warning_message}. "
+                "O laudo será gerado com flag de alerta."
+            )
 
         match_total = re.search(r'(\d+) \+ \d+ in total', flagstat_output)
         if match_total:
             total_reads = f"{int(match_total.group(1)) / 1000000:.1f}M"
 
-        match_rate = re.search(r'\(([\d\.]+)%', flagstat_output)
+        match_rate = re.search(r'\d+ \+ \d+ mapped \(([0-9.]+)%', flagstat_output)
         if match_rate:
             mapping_rate = f"{match_rate.group(1)}%"
 
         # --- ETAPA 4: CHAMADA DE VARIANTES — VarScan2 ---
         # O VCF é gerado pelo shell do Docker via '>'. O stdout nunca passa pelo Python.
         # _executar_docker captura apenas o stderr (progresso/warnings do VarScan2).
-        escrever_log_ui(paciente_uuid, "Executando VarScan2: Chamada de variantes somáticas (SNPs + INDELs, VAF >= 5%)...")
-        # mpileup2cns chama SNPs e INDELs simultaneamente.
-        # --min-var-freq 0.05: detecta variantes subclonais a partir de 5% VAF (padrão clínico oncológico).
-        # --min-coverage 20 + --min-reads2 5: mantém precisão mesmo a VAF baixo.
+        escrever_log_ui(paciente_uuid, f"Executando VarScan2: Chamada de variantes somáticas (SNPs + INDELs, VAF >= {vaf:.0%}, Min DP={min_dp})...")
+        # mpileup2cns chama SNPs e INDELs simultaneamente em VCF (--output-vcf 1).
+        # Parâmetros calibrados para sensibilidade máxima em Tumor-Only a 5% VAF:
+        # --min-coverage 20  : limiar baixo para não perder alvos de baixa cobertura local.
+        # --min-reads2 2     : mínimo de reads suporte — ajustado para capturar variantes raras.
+        # --min-var-freq 0.05: alinhado ao limiar clínico de 5% VAF para oncologia somática.
+        # --p-value 0.05     : filtro estatístico de Fischer para rejeitar ruído de sequenciamento.
+        # --strand-filter 0  : desativado — artefatos de strand bias são filtrados pelo FilterMutectCalls
+        #                      na etapa de consenso, preservando o recall do VarScan2 como "rede larga".
+        _bed_flag_mpileup = f"-l {docker_target_bed} " if docker_target_bed else ""
         comando_varscan_interno = (
             f"set -o pipefail; "
-            f"samtools mpileup -B -l /datasets/{NOME_ARQUIVO_BED} -f /datasets/Homo_sapiens_assembly38.fasta /processamento/{safe_uuid}.bam "
-            f"| varscan mpileup2cns --variants --output-vcf 1 --min-var-freq 0.05 --min-coverage 20 --min-reads2 5 "
+            f"samtools mpileup -B -d 0 {_bed_flag_mpileup}-f {docker_ref_genome} /processamento/{safe_uuid}.bam "
+            f"| varscan mpileup2cns --variants --output-vcf 1 --min-coverage {_VARSCAN_MIN_COV} --min-reads2 2 --min-var-freq {vaf} --p-value 0.05 --strand-filter 0 "
             f"> /processamento/{safe_uuid}_varscan.vcf"
         )
         comando_varscan = [
             "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
             "-v", f"{WSL_BASE}/datasets:/datasets",
             "-v", f"{WSL_BASE}/processamento:/processamento",
+            *ref_vol,
+            *bed_vol,
             "pantherflow-bioinfo", "sh", "-c", comando_varscan_interno
         ]
         t0 = time.time()
@@ -474,20 +949,37 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
         # Mutect2 escreve o VCF bruto diretamente via flag -O.
         # -germline-resource: gnomAD AF-only — penaliza variantes com alta frequência populacional,
         # separando variantes germinativas comuns de variantes somáticas raras (GATK Best Practices).
-        escrever_log_ui(paciente_uuid, "Executando Mutect2: Chamada de variantes somáticas (tumor-only + gnomAD)...")
+        # --f1r2-tar-gz: coleta estatísticas de orientação de leitura F1R2 durante a chamada.
+        # Esses dados alimentam o LearnReadOrientationModel (Etapa 4.5.5), que substitui o
+        # FilterByOrientationBias descontinuado no GATK 4.6 (Broad Institute, 2023).
+
+        if not use_pon:
+            logger.info(f"[{paciente_uuid}] PoN não fornecido — Mutect2 rodará sem Panel of Normals.")
+
+        escrever_log_ui(paciente_uuid, "Executando Mutect2: Chamada de variantes somáticas (tumor-only + gnomAD + F1R2)...")
+        # -min-AF removido intencionalmente: o Mutect2 deve ser sensível e emitir todas as
+        # variantes candidatas acima do seu limiar interno. O corte por VAF é responsabilidade
+        # exclusiva do FilterMutectCalls (--min-allele-fraction), que aplica o modelo
+        # probabilístico completo (TLOD, contaminação, F1R2) antes de descartar candidatos.
+        # Aplicar -min-AF aqui suprimiria variantes antes da avaliação estatística do filtro.
         comando_mutect2_interno = (
             f"gatk Mutect2 "
-            f"-R /datasets/Homo_sapiens_assembly38.fasta "
+            f"-R {docker_ref_genome} "
             f"-I /processamento/{safe_uuid}.bam "
             f"--tumor-sample {safe_uuid} "
-            f"-L /datasets/{NOME_ARQUIVO_BED} "
-            f"--germline-resource /datasets/af-only-gnomad.hg38.vcf.gz "
+            + (f"-L {docker_target_bed} " if docker_target_bed else "")
+            + f"--germline-resource /datasets/af-only-gnomad.hg38.vcf.gz "
+            + (f"-pon {docker_pon} " if use_pon else "")
+            + f"--f1r2-tar-gz /processamento/{safe_uuid}_f1r2.tar.gz "
             f"-O /processamento/{safe_uuid}_mutect_raw.vcf"
         )
         comando_mutect2 = [
             "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
             "-v", f"{WSL_BASE}/datasets:/datasets",
             "-v", f"{WSL_BASE}/processamento:/processamento",
+            *ref_vol,
+            *bed_vol,
+            *pon_vol,
             "pantherflow-bioinfo", "sh", "-c", comando_mutect2_interno
         ]
         t0 = time.time()
@@ -495,26 +987,129 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
         if returncode != 0:
             raise Exception(f"Erro Mutect2 (código {returncode}). Ver log do paciente para detalhes.")
 
+        # --- ETAPA 4.5.5: MODELO DE ORIENTAÇÃO F1R2 (LearnReadOrientationModel) ---
+        # Aprende o modelo probabilístico de artefatos de orientação a partir das estatísticas F1R2
+        # coletadas pelo Mutect2. O modelo .tar.gz gerado é passado ao FilterMutectCalls via
+        # --ob-priors, substituindo o FilterByOrientationBias (descontinuado GATK >= 4.2).
+        # Fallback: se falhar, o FilterMutectCalls roda sem o modelo — laudo não é bloqueado.
+        escrever_log_ui(paciente_uuid, "Executando LearnReadOrientationModel: Treinando modelo F1R2 (artefatos OxoG/FFPE)...")
+
+        rom_path        = f"/processamento/{safe_uuid}_read_orientation_model.tar.gz"
+        use_orientation = False
+        t0_rom          = time.time()
+
+        cmd_rom = (
+            f"gatk LearnReadOrientationModel "
+            f"-I /processamento/{safe_uuid}_f1r2.tar.gz "
+            f"-O {rom_path}"
+        )
+        rc_rom = _executar_docker([
+            "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+            "-v", f"{WSL_BASE}/processamento:/processamento",
+            "pantherflow-bioinfo", "sh", "-c", cmd_rom,
+        ], caminho_log)
+
+        tempos_etapas["artifact_filter"] = f"{time.time() - t0_rom:.1f}s"
+        if rc_rom != 0:
+            escrever_log_ui(paciente_uuid, f"[AVISO] LearnReadOrientationModel retornou código {rc_rom} — FilterMutectCalls rodará sem modelo F1R2.")
+        else:
+            use_orientation = True
+            escrever_log_ui(paciente_uuid, "Modelo de orientação F1R2 treinado com sucesso.")
+
+        # --- ETAPA 4.55: MODELO DE CONTAMINAÇÃO GDC (GetPileupSummaries + CalculateContamination) ---
+        # Padrão GDC NIH para análise Tumor-Only: estima fração de contaminação cruzada entre amostras
+        # usando variantes populacionais do gnomAD como âncoras. A tabela resultante é passada ao
+        # FilterMutectCalls para ajustar os limiares de filtro estatístico ao nível de contaminação real.
+        # Se qualquer etapa falhar, o pipeline continua SEM a tabela — FilterMutectCalls roda no modo
+        # padrão (sem --contamination-table), garantindo que o laudo não seja bloqueado.
+        escrever_log_ui(paciente_uuid, "Executando GetPileupSummaries: Estimando contaminação cruzada (GDC)...")
+
+        contaminacao_table = f"/processamento/{safe_uuid}_contamination.table"
+        use_contamination  = False  # flag de fallback
+        t0_contamination   = time.time()
+
+        cmd_pileup = (
+            f"gatk GetPileupSummaries "
+            f"-I /processamento/{safe_uuid}.bam "
+            f"-V /datasets/af-only-gnomad.hg38.vcf.gz "
+            f"-L /datasets/af-only-gnomad.hg38.vcf.gz "
+            f"-O /processamento/{safe_uuid}_pileup.table"
+        )
+        rc_pileup = _executar_docker([
+            "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+            "-v", f"{WSL_BASE}/datasets:/datasets",
+            "-v", f"{WSL_BASE}/processamento:/processamento",
+            "pantherflow-bioinfo", "sh", "-c", cmd_pileup,
+        ], caminho_log)
+
+        if rc_pileup != 0:
+            escrever_log_ui(paciente_uuid, f"[AVISO] GetPileupSummaries retornou código {rc_pileup} — FilterMutectCalls rodará sem modelo de contaminação.")
+        else:
+            escrever_log_ui(paciente_uuid, "Executando CalculateContamination: Calculando fração de contaminação...")
+            cmd_contamination = (
+                f"gatk CalculateContamination "
+                f"-I /processamento/{safe_uuid}_pileup.table "
+                f"-O {contaminacao_table}"
+            )
+            rc_contamination = _executar_docker([
+                "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+                "-v", f"{WSL_BASE}/processamento:/processamento",
+                "pantherflow-bioinfo", "sh", "-c", cmd_contamination,
+            ], caminho_log)
+
+            if rc_contamination != 0:
+                escrever_log_ui(paciente_uuid, f"[AVISO] CalculateContamination retornou código {rc_contamination} — FilterMutectCalls rodará sem modelo de contaminação.")
+            else:
+                use_contamination = True
+                escrever_log_ui(paciente_uuid, "Modelo de contaminação calculado com sucesso.")
+
+        tempos_etapas["contamination_calc"] = f"{time.time() - t0_contamination:.1f}s"
+
         # --- ETAPA 4.6: FILTRO ESTATÍSTICO — FilterMutectCalls ---
         # Aplica os filtros do GATK ao VCF bruto: strand bias, TLOD, orientação de fragmento, etc.
         # Somente variantes com FILTER=PASS entram no consenso — elimina artefatos sistemáticos.
+        # --contamination-table: modelo de contaminação GDC (Etapa 4.55), se disponível.
+        # --ob-priors: modelo F1R2 de artefatos de orientação (Etapa 4.5.5), se disponível.
         escrever_log_ui(paciente_uuid, "Executando FilterMutectCalls: Aplicando filtros estatísticos GATK...")
+        # --min-allele-fraction: alinha o limiar de emissão do FilterMutectCalls com o VAF
+        # configurado pelo usuário. Sem este parâmetro, o filtro interno "low_allele_frac"
+        # do GATK descarta variantes de baixo AF mesmo que o VarScan2 as tenha chamado —
+        # o consenso nunca refletiria a configuração customizada.
         comando_filter_interno = (
             f"gatk FilterMutectCalls "
-            f"-R /datasets/Homo_sapiens_assembly38.fasta "
+            f"-R {docker_ref_genome} "
             f"-V /processamento/{safe_uuid}_mutect_raw.vcf "
-            f"-O /processamento/{safe_uuid}_mutect.vcf"
+            f"--min-allele-fraction {vaf} "
+            + (f"--contamination-table {contaminacao_table} " if use_contamination else "")
+            + (f"--ob-priors {rom_path} " if use_orientation else "")
+            + f"-O /processamento/{safe_uuid}_mutect.vcf"
         )
         comando_filter = [
             "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
             "-v", f"{WSL_BASE}/datasets:/datasets",
             "-v", f"{WSL_BASE}/processamento:/processamento",
+            *ref_vol,
             "pantherflow-bioinfo", "sh", "-c", comando_filter_interno
         ]
+        t0 = time.time()
         returncode = _executar_docker(comando_filter, caminho_log)
-        tempos_etapas["mutect2"] = f"{time.time() - t0:.1f}s"
         if returncode != 0:
             raise Exception(f"Erro FilterMutectCalls (código {returncode}). Ver log do paciente para detalhes.")
+
+        tempos_etapas["mutect2"] = f"{time.time() - t0:.1f}s"
+
+        # --- ETAPA 4.6: CHAMADA DE VARIANTES — LoFreq (baixa frequência alélica) ---
+        escrever_log_ui(paciente_uuid, f"Executando LoFreq: Chamada de variantes somáticas de baixa frequência (VAF >= {vaf:.0%})...")
+        t0 = time.time()
+        vcf_lofreq_path = run_lofreq(
+            bam_name=f"{paciente_uuid}.bam",
+            docker_ref_genome=docker_ref_genome,
+            docker_target_bed=docker_target_bed,
+            paciente_uuid=paciente_uuid,
+            caminho_log=caminho_log,
+        )
+        tempos_etapas["lofreq"] = f"{time.time() - t0:.1f}s"
+        escrever_log_ui(paciente_uuid, f"LoFreq concluído → {vcf_lofreq_path.name}")
 
         # --- ETAPA 4.7: NORMALIZAÇÃO CANÔNICA (bcftools norm) ---
         # INDELs podem ser representados de formas diferentes por VarScan2 e Mutect2
@@ -527,7 +1122,7 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
         def _normalizar_vcf(nome_entrada: str, nome_saida: str) -> int:
             """Roda bcftools norm para canonicalizar a representação de variantes."""
             cmd = (
-                f"bcftools norm -m-any -f /datasets/Homo_sapiens_assembly38.fasta "
+                f"bcftools norm -m-any -f {docker_ref_genome} "
                 f"/processamento/{shlex.quote(nome_entrada)} "
                 f"> /processamento/{shlex.quote(nome_saida)}"
             )
@@ -535,39 +1130,92 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
                 "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
                 "-v", f"{WSL_BASE}/datasets:/datasets",
                 "-v", f"{WSL_BASE}/processamento:/processamento",
+                *ref_vol,
                 "pantherflow-bioinfo", "sh", "-c", cmd,
             ], caminho_log)
 
         # VarScan2 (mpileup2cns) produz cromossomos sem prefixo "chr" (ex: "1", "2").
         # A referência hg38 usa "chr1", "chr2" — bcftools norm abortaria com mismatch.
-        # Solução: renomear com chr_name_map.txt antes de normalizar (pipe interno no shell).
-        cmd_norm_varscan = (
-            f"bcftools annotate --rename-chrs /datasets/chr_name_map.txt "
+        # Solução em 2 etapas independentes (sem pipe): evita falha silenciosa dentro
+        # do subprocess, onde o returncode refletiria apenas o último comando do pipe.
+
+        # Passo A — Renomeação: "1" → "chr1", "2" → "chr2", etc.
+        # bcftools annotate --rename-chrs falha (erro 255) quando o VCF não contém cabeçalhos
+        # ##contig — caso padrão do VarScan2 mpileup2cns.
+        # Solução: sed injeta o prefixo "chr" SOMENTE em linhas não-header que ainda não
+        # o possuem. O guard /^chr/! torna o comando idempotente: se o VarScan2 já emitiu
+        # "chr1" (porque o BAM foi alinhado contra hg38), o sed não adiciona um segundo "chr".
+        cmd_rename_varscan = (
+            f"sed -e '/^[^#]/{{/^chr/!{{s/^/chr/}}}}' "
             f"/processamento/{shlex.quote(paciente_uuid + '_varscan.vcf')} "
-            f"| bcftools norm -m-any -f /datasets/Homo_sapiens_assembly38.fasta "
+            f"> /processamento/{shlex.quote(paciente_uuid + '_varscan_renamed.vcf')}"
+        )
+        rc_rename_varscan = _executar_docker([
+            "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
+            "-v", f"{WSL_BASE}/processamento:/processamento",
+            "pantherflow-bioinfo", "sh", "-c", cmd_rename_varscan,
+        ], caminho_log)
+        if rc_rename_varscan != 0:
+            escrever_log_ui(paciente_uuid, f"[AVISO] sed rename-chrs retornou código {rc_rename_varscan} — VarScan2 pode ter mismatch de cromossomos.")
+
+        # Passo B — Reheader + Normalização: injeta ##contig do .fai, depois left-aligns.
+        # bcftools norm falha com "CONTIG id=0 not present in the header" porque o VarScan2
+        # não gera declarações ##contig no cabeçalho do VCF.
+        # Solução: bcftools reheader --fai lê o índice FASTA e injeta todos os ##contig
+        # corretos via pipe — sem criar arquivo intermediário — antes do bcftools norm.
+        # Requer bcftools >= 1.9 (disponível: >= 1.18).
+        _varscan_renamed = WSL_PROCESSAMENTO / f"{paciente_uuid}_varscan_renamed.vcf"
+        nome_entrada_norm = (
+            f"{paciente_uuid}_varscan_renamed.vcf"
+            if rc_rename_varscan == 0 and _varscan_renamed.exists()
+            else f"{paciente_uuid}_varscan.vcf"
+        )
+        cmd_reheader_norm_varscan = (
+            f"set -o pipefail; "
+            f"bcftools reheader --fai {docker_ref_fai} "
+            f"/processamento/{shlex.quote(nome_entrada_norm)} "
+            f"| bcftools norm -m-any -f {docker_ref_genome} - "
             f"> /processamento/{shlex.quote(paciente_uuid + '_varscan_norm.vcf')}"
         )
         rc_norm_varscan = _executar_docker([
             "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
             "-v", f"{WSL_BASE}/datasets:/datasets",
             "-v", f"{WSL_BASE}/processamento:/processamento",
-            "pantherflow-bioinfo", "sh", "-c", cmd_norm_varscan,
+            *ref_vol,
+            "pantherflow-bioinfo", "sh", "-c", cmd_reheader_norm_varscan,
         ], caminho_log)
         if rc_norm_varscan != 0:
-            escrever_log_ui(paciente_uuid, f"[AVISO] bcftools norm VarScan2 retornou código {rc_norm_varscan} — usando VCF original.")
+            escrever_log_ui(paciente_uuid, f"[AVISO] bcftools reheader+norm VarScan2 retornou código {rc_norm_varscan} — usando VCF original.")
 
         rc_norm_mutect = _normalizar_vcf(f"{paciente_uuid}_mutect.vcf", f"{paciente_uuid}_mutect_norm.vcf")
         if rc_norm_mutect != 0:
             escrever_log_ui(paciente_uuid, f"[AVISO] bcftools norm Mutect2 retornou código {rc_norm_mutect} — usando VCF original.")
 
-        # --- ETAPA 5: CONSENSO MULTI-CALLER ---
-        # Lê os VCFs NORMALIZADOS com fallback seguro:
-        # verifica tamanho > 2KB para garantir que o arquivo não é só headers vazios
-        # (bcftools cria o arquivo via redirect mesmo quando falha, mas sem variantes).
-        escrever_log_ui(paciente_uuid, "Calculando consenso Multi-Caller (VarScan2 ∩ Mutect2 filtrado + normalizado)...")
+        # --- ETAPA 5: CONSENSO MULTI-CALLER (UNIÃO — OR) ---
+        # Estratégia alterada de interseção para UNIÃO para maximizar recall em amostras
+        # Tumor-Only de baixa cobertura, onde a concordância entre callers é restrita.
+        # Prioridade de linha: Mutect2 > VarScan2 (headers GATK compatíveis com SnpEff).
+        escrever_log_ui(paciente_uuid, "Calculando consenso Multi-Caller (VarScan2 ∪ Mutect2 — União OR)...")
 
-        def _vcf_valido(path: Path) -> bool:
-            return path.exists() and path.stat().st_size > 2048
+        def _parse_vcf_dict(filepath: Path) -> dict:
+            """Lê um VCF e retorna {(CHROM, POS, REF, ALT): linha_completa} — apenas PASS/'.'.
+            Substitui parse_vcf() (que retorna set) para preservar a linha original necessária
+            na escrita do consenso por união."""
+            _FILTROS_ACEITOS = {"PASS", "."}
+            resultado: dict = {}
+            try:
+                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                    for linha in f:
+                        if linha.startswith("#"):
+                            continue
+                        colunas = linha.strip().split("\t")
+                        if len(colunas) < 7 or colunas[6] not in _FILTROS_ACEITOS:
+                            continue
+                        chave = (colunas[0], colunas[1], colunas[3], colunas[4])
+                        resultado[chave] = linha
+            except (FileNotFoundError, OSError):
+                pass
+            return resultado
 
         _varscan_norm = WSL_PROCESSAMENTO / f"{paciente_uuid}_varscan_norm.vcf"
         _mutect_norm  = WSL_PROCESSAMENTO / f"{paciente_uuid}_mutect_norm.vcf"
@@ -575,19 +1223,68 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
         vcf_mutect_path   = _mutect_norm  if _vcf_valido(_mutect_norm)  else WSL_PROCESSAMENTO / f"{paciente_uuid}_mutect.vcf"
         vcf_consenso_path = WSL_PROCESSAMENTO / f"{paciente_uuid}_consensus.vcf"
 
-        set_varscan  = parse_vcf(vcf_varscan_path)
-        set_mutect   = parse_vcf(vcf_mutect_path)
-        set_consenso = set_varscan.intersection(set_mutect)
+        dict_varscan = _parse_vcf_dict(vcf_varscan_path)
+        dict_mutect  = _parse_vcf_dict(vcf_mutect_path)
+
+        # Mantém set_varscan e set_mutect para compatibilidade com o banco (variants_*)
+        set_varscan  = set(dict_varscan.keys())
+        set_mutect   = set(dict_mutect.keys())
+        set_consenso = set_varscan.union(set_mutect)   # OR — era intersection()
+
+        # Ordena genomicamente antes de gravar — sets são desordenados e o SnpSift exige
+        # VCF ordenado por (CHROM, POS). Cromossomos são strings ("chr1".."chrX"), por isso
+        # a chave separa o prefixo "chr" do número para ordenação numérica correta.
+        def _chr_sort_key(chave: tuple) -> tuple:
+            chrom_raw = chave[0]
+            sufixo = chrom_raw.lstrip("chr")
+            try:
+                return (0, int(sufixo), int(chave[1]))
+            except ValueError:
+                return (1, sufixo, int(chave[1]) if chave[1].isdigit() else 0)
+
+        variantes_ordenadas = sorted(set_consenso, key=_chr_sort_key)
 
         escrever_log_ui(
             paciente_uuid,
-            f"Consenso calculado: VarScan2={len(set_varscan)} | Mutect2={len(set_mutect)} | Consenso={len(set_consenso)}"
+            f"Consenso (união): VarScan2={len(set_varscan)} | Mutect2={len(set_mutect)} | União={len(set_consenso)}"
         )
 
-        # Gera o arquivo físico _consensus.vcf filtrando o Mutect2 pelo set de consenso.
-        # O Mutect2 é o template porque seus headers são compatíveis com o SnpEff (formato GATK).
-        escrever_consensus_vcf(vcf_mutect_path, set_consenso, vcf_consenso_path)
+        # Escreve _consensus.vcf usando headers do Mutect2 (template GATK/SnpEff).
+        # Para cada variante na união ordenada: linha do Mutect2 tem prioridade; linha do
+        # VarScan2 é usada apenas para variantes exclusivas que o Mutect2 não chamou.
+        if variantes_ordenadas:
+            try:
+                with open(vcf_mutect_path, "r", encoding="utf-8", errors="replace") as f_hdr, \
+                     open(vcf_consenso_path, "w", encoding="utf-8") as f_out:
+                    for linha in f_hdr:
+                        if linha.startswith("#"):
+                            f_out.write(linha)
+                        else:
+                            break  # para após os headers — dados vêm dos dicts
+                    for chave in variantes_ordenadas:
+                        f_out.write(
+                            dict_mutect[chave] if chave in dict_mutect else dict_varscan[chave]
+                        )
+            except (FileNotFoundError, OSError) as e:
+                raise RuntimeError(f"Falha ao escrever VCF de consenso (união): {e}") from e
+        else:
+            logger.warning(f"[{paciente_uuid}] União vazia — nenhum caller identificou variantes PASS no painel (set_consenso={len(set_consenso)}).")
+
         escrever_log_ui(paciente_uuid, f"Arquivo de consenso gerado: {vcf_consenso_path.name}")
+
+        # --- GERAÇÃO DO PLOT DATA (VAF + DP por caller) ---
+        # Consolida métricas de VAF e profundidade dos três VCFs para o gráfico do front-end.
+        dados_grafico = (
+            extrair_metricas_vcf(vcf_varscan_path,  "VarScan2")
+            + extrair_metricas_vcf(vcf_mutect_path,  "Mutect2")
+            + extrair_metricas_vcf(vcf_consenso_path, "Consenso")
+        )
+        _plot_path = WSL_PROCESSAMENTO / f"{paciente_uuid}_plot_data.json"
+        try:
+            with open(_plot_path, "w", encoding="utf-8") as _f:
+                json.dump(dados_grafico, _f)
+        except OSError as _e:
+            logger.warning(f"[{paciente_uuid}] Falha ao salvar plot_data.json: {_e}")
 
         # --- ETAPA 5.5: ANOTAÇÃO FUNCIONAL (SnpEff) — VarScan2 + Mutect2 + Consenso ---
         # Barreira de segurança: verifica o banco GRCh38.99 antes de qualquer chamada SnpEff.
@@ -599,98 +1296,66 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
                 "pantherflow-bioinfo snpEff download GRCh38.99 -dataDir /datasets/snpeff_data"
             )
 
-        def _anotar_vcf(nome_entrada: str, nome_saida: str) -> int:
-            """Roda SnpEff num VCF e escreve o resultado anotado via redirect de shell."""
-            cmd = (
-                f"snpEff ann -dataDir /datasets/snpeff_data -nodownload -Xmx4g GRCh38.99 "
-                f"/processamento/{shlex.quote(nome_entrada)} "
-                f"> /processamento/{shlex.quote(nome_saida)}"
-            )
-            return _executar_docker([
-                "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
-                "-v", f"{WSL_BASE}/datasets:/datasets",
-                "-v", f"{WSL_BASE}/processamento:/processamento",
-                "pantherflow-bioinfo", "sh", "-c", cmd,
-            ], caminho_log)
-
-        def _anotar_snpsift(vcf_entrada: str, vcf_saida: str, vcf_db: str, campos: str) -> int:
-            """Roda SnpSift annotate para injetar campos de um banco externo (ClinVar, COSMIC)."""
-            cmd = (
-                f"SnpSift annotate -info {campos} "
-                f"/datasets/{vcf_db} "
-                f"/processamento/{shlex.quote(vcf_entrada)} "
-                f"> /processamento/{shlex.quote(vcf_saida)}"
-            )
-            return _executar_docker([
-                "wsl", "-d", "Ubuntu", "-u", "root", "docker", "run", "--rm",
-                "-v", f"{WSL_BASE}/datasets:/datasets",
-                "-v", f"{WSL_BASE}/processamento:/processamento",
-                "pantherflow-bioinfo", "sh", "-c", cmd,
-            ], caminho_log)
-
         t0 = time.time()
-        escrever_log_ui(paciente_uuid, "Executando SnpEff: Anotando variantes VarScan2...")
-        rc_varscan = _anotar_vcf(f"{paciente_uuid}_varscan.vcf", f"{paciente_uuid}_varscan_annotated.vcf")
-        if rc_varscan != 0:
-            escrever_log_ui(paciente_uuid, f"[AVISO] SnpEff VarScan2 retornou código {rc_varscan} — tabela de anotação pode ficar vazia.")
 
-        escrever_log_ui(paciente_uuid, "Executando SnpEff: Anotando variantes Mutect2...")
-        rc_mutect = _anotar_vcf(f"{paciente_uuid}_mutect.vcf", f"{paciente_uuid}_mutect_annotated.vcf")
-        if rc_mutect != 0:
-            escrever_log_ui(paciente_uuid, f"[AVISO] SnpEff Mutect2 retornou código {rc_mutect} — tabela de anotação pode ficar vazia.")
-
-        escrever_log_ui(paciente_uuid, "Executando SnpEff: Anotando variantes de Consenso...")
-        rc_consenso = _anotar_vcf(f"{paciente_uuid}_consensus.vcf", f"{paciente_uuid}_consensus_snpeff.vcf")
-        if rc_consenso != 0:
-            raise Exception(f"Erro SnpEff Consenso (código {rc_consenso}). Ver log do paciente para detalhes.")
-
-        # --- ETAPA 5.6: ANOTAÇÃO CLÍNICA — ClinVar (patogenicidade) ---
-        # Injeta CLNSIG (Pathogenic/Benign/VUS) e CLNDN (nome da doença associada).
-        # Transforma a lista de variantes em interpretação clínica direta.
-        escrever_log_ui(paciente_uuid, "Executando SnpSift: Anotando com ClinVar (patogenicidade)...")
-        rc_clinvar = _anotar_snpsift(
-            f"{paciente_uuid}_consensus_snpeff.vcf",
-            f"{paciente_uuid}_consensus_clinvar.vcf",
-            "clinvar.vcf.gz",
-            "CLNSIG,CLNDN"
+        # --- ETAPA 5.5: ANOTAÇÃO COMPLETA (SnpEff + ClinVar + COSMIC + gnomAD) ---
+        escrever_log_ui(paciente_uuid, f"Anotando VarScan2 ({vcf_varscan_path.name})...")
+        anotar_vcf_completo(
+            input_vcf=vcf_varscan_path.name,
+            output_vcf=f"{paciente_uuid}_varscan_annotated.vcf",
+            paciente_uuid=paciente_uuid,
+            caminho_log=caminho_log,
         )
-        if rc_clinvar != 0:
-            escrever_log_ui(paciente_uuid, f"[AVISO] SnpSift ClinVar retornou código {rc_clinvar} — campos clínicos ausentes no laudo.")
 
-        # --- ETAPA 5.7: ANOTAÇÃO ONCOLÓGICA — COSMIC (frequência em tumores) ---
-        # Injeta CNT (contagem de amostras com esta mutação no banco COSMIC v103).
-        # Variantes com alto CNT são recorrentes em tumores — forte evidência de driver somático.
-        escrever_log_ui(paciente_uuid, "Executando SnpSift: Anotando com COSMIC (frequência oncológica)...")
-        vcf_entrada_cosmic = (
-            f"{paciente_uuid}_consensus_clinvar.vcf"
-            if (WSL_PROCESSAMENTO / f"{paciente_uuid}_consensus_clinvar.vcf").exists()
-            else f"{paciente_uuid}_consensus_snpeff.vcf"
+        escrever_log_ui(paciente_uuid, f"Anotando Mutect2 ({vcf_mutect_path.name})...")
+        anotar_vcf_completo(
+            input_vcf=vcf_mutect_path.name,
+            output_vcf=f"{paciente_uuid}_mutect_annotated.vcf",
+            paciente_uuid=paciente_uuid,
+            caminho_log=caminho_log,
         )
-        rc_cosmic = _anotar_snpsift(
-            vcf_entrada_cosmic,
-            f"{paciente_uuid}_consensus_annotated.vcf",
-            "Cosmic_GenomeScreensMutant_v103_GRCh38.vcf.gz",
-            "CNT"
+
+        escrever_log_ui(paciente_uuid, f"Anotando LoFreq ({vcf_lofreq_path.name})...")
+        anotar_vcf_completo(
+            input_vcf=vcf_lofreq_path.name,
+            output_vcf=f"{paciente_uuid}_lofreq_annotated.vcf",
+            paciente_uuid=paciente_uuid,
+            caminho_log=caminho_log,
         )
-        tempos_etapas["snpeff"] = f"{time.time() - t0:.1f}s"
-        if rc_cosmic != 0:
-            escrever_log_ui(paciente_uuid, f"[AVISO] SnpSift COSMIC retornou código {rc_cosmic} — campo CNT ausente no laudo.")
-            # Fallback: usa o VCF ClinVar (sem COSMIC) como anotado final
-            import shutil as _shutil
-            _src = WSL_PROCESSAMENTO / vcf_entrada_cosmic
-            _dst = WSL_PROCESSAMENTO / f"{paciente_uuid}_consensus_annotated.vcf"
-            if _src.exists() and not _dst.exists():
-                _shutil.copy2(_src, _dst)
+
+        if not set_consenso:
+            escrever_log_ui(paciente_uuid, "[AVISO] Consenso vazio — anotação de consenso ignorada.")
+        else:
+            escrever_log_ui(paciente_uuid, "Anotando Consenso...")
+            anotar_vcf_completo(
+                input_vcf=f"{paciente_uuid}_consensus.vcf",
+                output_vcf=f"{paciente_uuid}_consensus_gnomad.vcf",
+                paciente_uuid=paciente_uuid,
+                caminho_log=caminho_log,
+            )
 
         # --- ETAPA 6: LIMPEZA E ATUALIZAÇÃO FINAL ---
-        arquivo_sam      = WSL_PROCESSAMENTO / f"{paciente_uuid}.sam"
-        if arquivo_sam.exists():
-            os.remove(arquivo_sam)
+        # Nota: o .sam não existe mais — o pipeline unificado BWA+Samtools (Etapas 1+2)
+        # nunca grava o SAM em disco. A remoção explícita foi removida junto com o arquivo.
 
         # Parseia o VCF anotado e gera o resumo para o banco.
         # parsear_anotacoes_snpeff() nunca lança exceção — retorna {} em caso de falha.
-        vcf_anotado_path = WSL_PROCESSAMENTO / f"{paciente_uuid}_consensus_annotated.vcf"
+        # Prefere o VCF com anotação gnomAD (AF); fallback para o VCF sem ela.
+        _gnomad_vcf      = WSL_PROCESSAMENTO / f"{paciente_uuid}_consensus_gnomad.vcf"
+        vcf_anotado_path = _gnomad_vcf if _vcf_valido(_gnomad_vcf) else WSL_PROCESSAMENTO / f"{paciente_uuid}_consensus_annotated.vcf"
         annotation_summary = parsear_anotacoes_snpeff(vcf_anotado_path)
+
+        # --- DEBUG TEMPORÁRIO: estrutura do primeiro dict de variante ---
+        _debug_variants = annotation_summary.get("top_variants", [])
+        if _debug_variants:
+            logger.info(
+                "[DEBUG parsear_anotacoes_snpeff — CONSENSO] primeira variante:\n%s",
+                json.dumps(_debug_variants[0], indent=2, ensure_ascii=False)
+            )
+        else:
+            logger.info("[DEBUG parsear_anotacoes_snpeff — CONSENSO] top_variants vazio ou ausente.")
+        # --- FIM DEBUG ---
+
         escrever_log_ui(
             paciente_uuid,
             f"Anotação SnpEff: {annotation_summary.get('total_annotated', 0)} variantes "
@@ -705,39 +1370,57 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str, nome_arquiv
                 f"Registro do paciente não encontrado no banco (UUID: {paciente_uuid}). "
                 "Laudo não pode ser salvo. Verifique a integridade do banco de dados."
             )
-        if registro_final:
-            registro_final.status = "completed"
 
-            # Métricas Biológicas
-            registro_final.total_reads = total_reads
-            registro_final.mapping_rate = mapping_rate
-            registro_final.mean_coverage = mean_coverage
+        registro_final.status = "completed"
 
-            # Rastreabilidade Clínica
-            registro_final.bwa_version = "0.7.17-r1188"
-            registro_final.samtools_version = "1.13"
-            registro_final.reference_version = "Homo_sapiens_assembly38"
+        # Métricas Biológicas
+        registro_final.total_reads = total_reads
+        registro_final.mapping_rate = mapping_rate
+        registro_final.mean_coverage = mean_coverage
 
-            # Multi-Caller Consensus
-            registro_final.variants_varscan   = len(set_varscan)
-            registro_final.variants_mutect    = len(set_mutect)
-            registro_final.variants_consensus = len(set_consenso)
+        # Rastreabilidade Clínica
+        registro_final.bwa_version = "0.7.17-r1188"
+        registro_final.samtools_version = "1.13"
+        registro_final.reference_version = "Homo_sapiens_assembly38"
 
-            # Detalhe por caller — variantes anotadas pelo SnpEff (gene, effect, impact, hgvs_p)
-            varscan_ann = parsear_anotacoes_snpeff(WSL_PROCESSAMENTO / f"{paciente_uuid}_varscan_annotated.vcf")
-            mutect_ann  = parsear_anotacoes_snpeff(WSL_PROCESSAMENTO / f"{paciente_uuid}_mutect_annotated.vcf")
-            registro_final.varscan_details = json.dumps(varscan_ann.get("top_variants", []))
-            registro_final.mutect_details  = json.dumps(mutect_ann.get("top_variants",  []))
+        # Multi-Caller Consensus
+        registro_final.variants_varscan   = len(set_varscan)
+        registro_final.variants_mutect    = len(set_mutect)
+        registro_final.variants_consensus = len(set_consenso)
 
-            # Anotação Funcional (SnpEff)
-            if annotation_summary:
-                registro_final.annotation_summary = json.dumps(annotation_summary)
+        # Detalhe por caller — usa VCF anotado pelo SnpEff quando disponível;
+        # fallback para o VCF normalizado bruto quando SnpEff falhou.
+        # parsear_anotacoes_snpeff lida com VCFs sem ANN= (retorna "—" nos campos funcionais).
+        _varscan_ann_path = WSL_PROCESSAMENTO / f"{paciente_uuid}_varscan_annotated.vcf"
+        if not _vcf_valido(_varscan_ann_path):
+            _varscan_ann_path = vcf_varscan_path
+        _mutect_ann_path = WSL_PROCESSAMENTO / f"{paciente_uuid}_mutect_annotated.vcf"
+        if not _vcf_valido(_mutect_ann_path):
+            _mutect_ann_path = vcf_mutect_path
+        _lofreq_ann_path = WSL_PROCESSAMENTO / f"{paciente_uuid}_lofreq_annotated.vcf"
+        if not _vcf_valido(_lofreq_ann_path):
+            _lofreq_ann_path = vcf_lofreq_path
 
-            # Telemetria
-            registro_final.time_total = f"{time.time() - pipeline_start:.1f}s"
-            registro_final.time_steps = json.dumps(tempos_etapas)
+        varscan_ann = parsear_anotacoes_snpeff(_varscan_ann_path)
+        mutect_ann  = parsear_anotacoes_snpeff(_mutect_ann_path)
+        lofreq_ann  = parsear_anotacoes_snpeff(_lofreq_ann_path)
+        registro_final.varscan_details = json.dumps(varscan_ann.get("top_variants", []))
+        registro_final.mutect_details  = json.dumps(mutect_ann.get("top_variants",  []))
+        registro_final.lofreq_details  = json.dumps(lofreq_ann.get("top_variants",  []))
 
-            db.commit()
+        # Anotação Funcional (SnpEff)
+        if annotation_summary:
+            registro_final.annotation_summary = json.dumps(annotation_summary)
+
+        # Telemetria — inclui métricas de QC de cobertura do painel (bedcov) e flag do Soft Gate
+        tempos_etapas["qc_alvos_zerados"]   = pct_alvos_zerados
+        tempos_etapas["qc_alvos_criticos"]  = pct_alvos_criticos
+        tempos_etapas["qc_warning_flag"]    = qc_warning_flag
+        tempos_etapas["qc_warning_message"] = qc_warning_message
+        registro_final.time_total = f"{time.time() - pipeline_start:.1f}s"
+        registro_final.time_steps = json.dumps(tempos_etapas)
+
+        db.commit()
 
         escrever_log_ui(paciente_uuid, "PIPELINE FINALIZADO COM SUCESSO. Laudo disponível.")
 

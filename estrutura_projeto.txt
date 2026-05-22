@@ -1,0 +1,64 @@
+.
+├── .gitignore
+├── .vscode
+│   └── settings.json
+├── BIOINFORMATICA_CRITERIOS_PIPELINE.md
+├── Dockerfile
+├── PIPELINE_ARCHITECTURE.md
+├── README.md
+├── RELATORIO_TECNOLOGIAS.md
+├── backend
+│   ├── .env
+│   ├── database.py
+│   ├── main.py
+│   ├── main.spec
+│   ├── models.py
+│   ├── pantherflow.db
+│   ├── pantherflow.log
+│   ├── pipeline.py
+│   ├── requirements.txt
+│   └── uploads
+│       └── teste.fastq
+├── baixar_referencias.py
+├── corrigir_datasets.py
+├── electron.cjs
+├── eslint.config.js
+├── estrutura_projeto.txt
+├── index.html
+├── iniciar.bat
+├── iniciar.sh
+├── logo.png
+├── package-lock.json
+├── package.json
+├── pantherflow.log
+├── postcss.config.js
+├── preparar_auxiliares.py
+├── public
+│   └── vite.svg
+├── src
+│   ├── App.css
+│   ├── App.jsx
+│   ├── assets
+│   │   └── react.svg
+│   ├── common
+│   │   ├── data
+│   │   └── ui
+│   ├── features
+│   │   ├── analysis
+│   │   ├── dashboard
+│   │   ├── history
+│   │   └── monitor
+│   ├── index.css
+│   ├── layout
+│   │   └── MainLayout.jsx
+│   ├── main.jsx
+│   └── pages
+│       ├── Dashboard.jsx
+│       ├── Monitor.jsx
+│       ├── NewAnalysis.jsx
+│       ├── Results.jsx
+│       └── Settings.jsx
+├── tailwind.config.js
+└── vite.config.js
+
+17 directories, 45 files

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, CheckCircle, XCircle, Terminal, Cpu } from 'lucide-react';
+import { CheckCircle, XCircle, Terminal, Cpu, Activity } from 'lucide-react';
+import { GiPawPrint } from 'react-icons/gi';
 import { useLocation } from 'react-router-dom'; // <--- IMPORTANTE: Pegar dados da navegação
 import { api } from '../../common/data/api';
 import HardwareMonitor from './ui/HardwareMonitor';
@@ -81,10 +82,10 @@ export default function MonitorFeature() {
   const isFailed = latestRun.status === 'failed';
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
-      
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
       {/* COLUNA ESQUERDA: CARD DO PIPELINE */}
-      <div className="xl:col-span-2 flex flex-col gap-6">
+      <div className="lg:col-span-8 flex flex-col gap-6">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className={`p-6 flex items-center justify-between border-b 
             ${isProcessing ? 'border-amber-100 bg-amber-50/30' : ''}
@@ -93,7 +94,10 @@ export default function MonitorFeature() {
           `}>
             <div>
               <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                <Cpu className={isProcessing ? "text-amber-500" : "text-slate-400"} size={24} />
+                {isProcessing
+                  ? <GiPawPrint className="text-amber-500 animate-pulse w-8 h-8" />
+                  : <Cpu size={24} className="text-slate-400" />
+                }
                 {isProcessing ? "Processamento Ativo" : "Última Análise Registrada"}
               </h3>
               <p className="text-sm text-slate-500 mt-1">
@@ -103,7 +107,7 @@ export default function MonitorFeature() {
             </div>
             
             <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-slate-100">
-              {isProcessing && <Activity size={18} className="text-amber-500 animate-spin" />}
+              {isProcessing && <GiPawPrint className="text-amber-500 animate-pulse w-6 h-6" />}
               {isCompleted && <CheckCircle size={18} className="text-emerald-500" />}
               {isFailed && <XCircle size={18} className="text-red-500" />}
               <span className="font-bold text-sm uppercase tracking-wider">
@@ -127,7 +131,7 @@ export default function MonitorFeature() {
                 </span>
               )}
             </div>
-            <div className="font-mono text-xs text-emerald-400 h-[400px] overflow-y-auto whitespace-pre-wrap leading-relaxed">
+            <div className="font-mono text-xs text-emerald-400 min-h-[600px] h-[600px] overflow-y-auto whitespace-pre-wrap leading-relaxed">
               {consoleLogs}
             </div>
           </div>
@@ -135,8 +139,8 @@ export default function MonitorFeature() {
       </div>
 
       {/* COLUNA DIREITA: MONITOR DE CARGA DO SISTEMA */}
-      <div className="xl:col-span-1 sticky top-6">
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+      <div className="lg:col-span-4 sticky top-6 self-stretch">
+        <div className="rounded-xl shadow-sm border border-slate-200 overflow-hidden h-full">
           <HardwareMonitor sysHealth={sysHealth} />
         </div>
       </div>

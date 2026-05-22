@@ -4,6 +4,8 @@ load_dotenv()  # Carrega backend/.env antes de qualquer import que use os.getenv
 from fastapi.responses import FileResponse
 import glob
 import hashlib
+import json
+from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -29,6 +31,21 @@ logger = logging.getLogger(__name__)
 
 # Cria as tabelas no banco de dados (se não existirem)
 models.Base.metadata.create_all(bind=engine)
+
+# Migração defensiva — adiciona colunas novas em instâncias existentes do banco sem Alembic.
+# ALTER TABLE ignora o erro "duplicate column" via try/except para ser idempotente.
+def _migrar_colunas():
+    with engine.connect() as conn:
+        for col_def in [
+            "ALTER TABLE analyses ADD COLUMN lofreq_details TEXT",
+        ]:
+            try:
+                conn.execute(__import__("sqlalchemy").text(col_def))
+                conn.commit()
+            except Exception:
+                pass  # coluna já existe
+
+_migrar_colunas()
 
 app = FastAPI(title="PantherFlow Clinical Engine")
 
@@ -97,6 +114,10 @@ async def start_analysis(
     doctor: str = Form(...),
     protocol: str = Form(...),
     sex: str = Form(...),
+    config: str = Form(default='{"vaf": 0.05, "minDp": 100}'),
+    ref_genome: Optional[str] = Form(None),
+    target_bed: Optional[str] = Form(None),
+    pon_file:   Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """Gera UUID, salva R1 e R2 no disco e inicia o pipeline Paired-End"""
@@ -166,7 +187,14 @@ async def start_analysis(
         nome_r1 = nomes_salvos["R1"]
         nome_r2 = nomes_salvos.get("R2")   # None se modo Single-End
 
-        background_tasks.add_task(processar_paciente_wsl, id_anonimo, nome_r1, nome_r2)
+        try:
+            cfg = json.loads(config)
+            vaf    = float(cfg.get("vaf",   0.05))
+            min_dp = int(cfg.get("minDp", 100))
+        except (ValueError, KeyError):
+            vaf, min_dp = 0.05, 100
+
+        background_tasks.add_task(processar_paciente_wsl, id_anonimo, nome_r1, nome_r2, vaf, min_dp, ref_genome, target_bed, pon_file)
 
         return {"status": "processing", "db_id": new_entry.id, "uuid": id_anonimo}
 
@@ -189,7 +217,19 @@ def get_analysis(uuid: str, db: Session = Depends(get_db)):
     analysis = db.query(models.Analysis).filter(models.Analysis.patient_uuid == uuid).first()
     if not analysis:
         raise HTTPException(status_code=404, detail="Análise não encontrada")
-    return analysis
+
+    data = {k: v for k, v in vars(analysis).items() if not k.startswith("_")}
+
+    plot_data = []
+    try:
+        plot_path = WSL_PROCESSAMENTO / f"{uuid}_plot_data.json"
+        with open(plot_path, "r", encoding="utf-8") as f:
+            plot_data = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        pass
+
+    data["plot_data"] = plot_data
+    return data
 
 @app.delete("/api/analysis/{analysis_id}")
 def delete_analysis(analysis_id: int, db: Session = Depends(get_db)):

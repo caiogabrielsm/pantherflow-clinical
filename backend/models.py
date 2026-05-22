@@ -40,3 +40,4 @@ class Analysis(Base):
     # --- SPRINT 4: DETALHE DE VARIANTES POR CALLER ---
     varscan_details = Column(Text, nullable=True)  # JSON: [{chrom,pos,ref,alt}, ...]
     mutect_details  = Column(Text, nullable=True)  # JSON: [{chrom,pos,ref,alt}, ...]
+    lofreq_details  = Column(Text, nullable=True)  # JSON: [{chrom,pos,ref,alt}, ...]

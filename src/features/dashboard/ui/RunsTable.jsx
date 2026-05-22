@@ -28,13 +28,14 @@ export default function RunsTable({ runs, onRunDeleted }) {
             <th className="p-4 font-semibold">Médico</th>
             <th className="p-4 font-semibold">Protocolo</th>
             <th className="p-4 font-semibold">Status</th>
+            <th className="p-4 font-semibold">Data de Criação</th>
             <th className="p-4 font-semibold text-right">Ações</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
           {runs.length === 0 ? (
             <tr>
-              <td colSpan="5" className="p-8 text-center text-slate-400">
+              <td colSpan="6" className="p-8 text-center text-slate-400">
                 Nenhuma corrida encontrada no histórico.
               </td>
             </tr>
@@ -53,6 +54,9 @@ export default function RunsTable({ runs, onRunDeleted }) {
                 </td>
                 <td className="p-4">
                   <StatusBadge status={run.status} />
+                </td>
+                <td className="p-4 text-sm text-slate-500 whitespace-nowrap">
+                  {run.date ? new Date(run.date.replace(' ', 'T') + 'Z').toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
                 </td>
                 <td className="p-4 flex items-center justify-end gap-2">
                   

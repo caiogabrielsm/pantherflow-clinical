@@ -10,3 +10,7 @@ node_modules/
 # Credenciais e variáveis de ambiente — NUNCA versionar
 .env
 backend/.env
+
+# Arquivos genômicos e de banco de dados
+references/
+data/
