@@ -1,7 +1,7 @@
 {
   "name": "pantherflow-clinical",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "main": "electron.cjs",
   "type": "module",
   "scripts": {
@@ -9,7 +9,45 @@
     "build": "vite build",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"npm run dev\" \"electron .\""
+    "electron:dev": "concurrently \"npm run dev\" \"electron .\"",
+    "electron:prod": "npm run build && electron .",
+    "dist": "npm run build && electron-builder"
+  },
+  "build": {
+    "appId": "br.edu.ufcspa.pantherflow",
+    "productName": "PantherFlow Clinical",
+    "copyright": "Copyright © 2026 UFCSPA — Caio Gabriel",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron.cjs",
+      "logo.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/dist-pyinstaller/main/",
+        "to": "backend/",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "logo.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PantherFlow Clinical",
+      "installerIcon": "logo.png",
+      "uninstallerIcon": "logo.png"
+    }
   },
   "dependencies": {
     "axios": "^1.13.6",

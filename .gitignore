@@ -1,16 +1,63 @@
+# ── Dados genômicos ──────────────────────────────────────────────────────────
 *.sam
 *.bam
+*.bam.bai
 *.fastq.gz
-*.db
-pantherflow.log
-__pycache__/
-venv/
-node_modules/
+*.fastq
+*.fasta
+*.fa
+*.vcf
+*.vcf.gz
+*.tbi
+*.bed
+references/
+data/
+resultados_sarek/
+work/
+samplesheet.csv
+variantes_clinicas.csv
+pipeline_flowchart.mmd
+pipeline_flowchart.png
 
-# Credenciais e variáveis de ambiente — NUNCA versionar
+# ── Banco de dados ────────────────────────────────────────────────────────────
+*.db
+*.db-journal
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+.nextflow.log*
+pantherflow.log
+
+# ── Nextflow ──────────────────────────────────────────────────────────────────
+.nextflow/
+
+# ── Credenciais e variáveis de ambiente ─────────────────────────────────────
 .env
 backend/.env
 
-# Arquivos genômicos e de banco de dados
-references/
-data/
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+backend/venv/
+backend/.venv/
+
+# ── PyInstaller ───────────────────────────────────────────────────────────────
+backend/dist-pyinstaller/
+backend/build-pyinstaller/
+backend/build/
+
+# ── Node / Electron ───────────────────────────────────────────────────────────
+node_modules/
+dist/
+release/
+
+# ── Scripts de diagnóstico (não fazem parte do produto) ──────────────────────
+backend/check_db.py
+backend/diag_*.py
+backend/generate_mock_data.py
+
+# ── Docs gerados localmente ───────────────────────────────────────────────────
+docs/
