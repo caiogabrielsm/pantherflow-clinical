@@ -2,20 +2,21 @@
 
 **Plataforma de Genômica Clínica para Variant Calling Tumor-Only**
 
-Sistema desktop para orquestração de pipelines bioinformáticos clínicos aplicados à análise de variantes somáticas em painéis de amplicons/captura (AmpliSeq, Twist). Desenvolvido como TCC — UFCSPA.
+Sistema desktop para orquestração de pipelines bioinformáticos clínicos aplicados à análise de variantes somáticas em painéis de captura/amplicons (Twist, AmpliSeq). Desenvolvido como TCC — UFCSPA 2026.
 
 ---
 
 ## Sumário
 
 1. [Visão Geral](#1-visão-geral)
-2. [Pré-requisitos de Sistema](#2-pré-requisitos-de-sistema)
+2. [Requisitos de Sistema](#2-requisitos-de-sistema)
 3. [Instalação do Ambiente — Primeira Vez](#3-instalação-do-ambiente--primeira-vez)
-   - 3.1 WSL2
+   - 3.1 WSL2 + Ubuntu
    - 3.2 Docker Desktop
-   - 3.3 Estrutura de Diretórios no WSL2
-   - 3.4 Imagem Docker
-   - 3.5 Datasets de Referência
+   - 3.3 Estrutura de diretórios no WSL2
+   - 3.4 Imagens Docker
+   - 3.5 Datasets de referência
+   - 3.6 Arquivo BED do painel
 4. [Configuração do Arquivo .env](#4-configuração-do-arquivo-env)
 5. [Como Abrir o Software](#5-como-abrir-o-software)
 6. [Como Usar — Passo a Passo](#6-como-usar--passo-a-passo)
@@ -34,10 +35,14 @@ O PantherFlow Clinical executa um pipeline de variant calling completo **localme
 **Fluxo resumido:**
 
 ```
-FASTQ (R1 + R2) → fastp → BWA-MEM → samtools (BAM)
-→ Qualimap → VarScan2 + Mutect2 + LoFreq
-→ bcftools norm → Consenso (interseção)
-→ snpEff + SnpSift → Laudo Clínico (PDF)
+FASTQ (R1 + R2)
+  → fastp (QC + trimagem)
+  → BWA-MEM + samtools (alinhamento → BAM)
+  → Qualimap + samtools coverage (QC de cobertura)
+  → VarScan2 + Mutect2 + LoFreq (3 callers independentes)
+  → bcftools norm → Consenso (interseção dos 3)
+  → snpEff + SnpSift ClinVar + COSMIC + gnomAD (anotação)
+  → Laudo Clínico (HTML/PDF)
 ```
 
 **Stack:**
@@ -46,60 +51,63 @@ FASTQ (R1 + R2) → fastp → BWA-MEM → samtools (BAM)
 |---|---|
 | Interface | Electron 40 + React 19 + Tailwind CSS |
 | Motor | FastAPI + SQLite + SQLAlchemy |
-| Pipeline | Docker (WSL2) — imagem `pantherflow-bioinfo` |
+| Pipeline | Docker (WSL2) — 3 imagens |
 | OS alvo | Windows 10/11 (x64) com WSL2 |
 
 ---
 
-## 2. Pré-requisitos de Sistema
+## 2. Requisitos de Sistema
 
-| Requisito | Mínimo | Recomendado |
+> ⚠️ Estes são os requisitos **reais** testados com o pipeline. Valores abaixo do mínimo causam travamentos ou falhas silenciosas no Mutect2 e LoFreq.
+
+| Recurso | **Mínimo absoluto** | **Recomendado** |
 |---|---|---|
-| Windows | 10 v2004 ou Win 11 | Windows 11 |
-| RAM | 16 GB | 32 GB |
-| Disco livre | 200 GB | 500 GB |
-| CPU | 8 núcleos | 16 núcleos |
+| Windows | 10 v2004 (Build 19041) ou Win 11 | Windows 11 |
+| RAM | **32 GB** | 64 GB |
+| CPU | 8 núcleos físicos | 16+ núcleos |
+| Disco livre | **300 GB** | 500 GB+ |
 | WSL2 + Ubuntu | 22.04 | 24.04 |
 | Docker Desktop | 4.x | última versão |
 
-> **Atenção:** O software não funciona sem WSL2 e Docker Desktop instalados e em execução.
+**Por que 32 GB?**
+- BWA-MEM carrega o índice hg38 (~8 GB) em memória
+- Mutect2 aloca 8–16 GB de heap Java em amostras WES
+- LoFreq + VarScan2 + snpEff rodam em paralelo ou em sequência com o sistema operacional ativo
+
+Com 16 GB, o Mutect2 pode terminar em amostras de painel pequeno, mas vai travar ou ser encerrado pelo SO em WES.
 
 ---
 
 ## 3. Instalação do Ambiente — Primeira Vez
 
-> Esta configuração é feita **uma única vez**. Após concluída, basta abrir o software normalmente.
+> Esta configuração é feita **uma única vez**. Após concluída, basta abrir o software.
 
-### 3.1 Instalar WSL2 com Ubuntu
+### 3.1 Instalar WSL2 + Ubuntu
 
-Abra o **PowerShell como Administrador** e execute:
+Abra o **PowerShell como Administrador**:
 
 ```powershell
 wsl --install -d Ubuntu
 ```
 
-Aguarde o download e reinicie quando solicitado. Após reiniciar, o Ubuntu abrirá pedindo para criar um usuário e senha. **Anote o nome de usuário criado** — será necessário na etapa 4.
+Reinicie quando solicitado. Após reiniciar, o Ubuntu abrirá pedindo usuário e senha. **Anote o nome de usuário** — será necessário na etapa 4.
 
 Verifique:
 
 ```powershell
 wsl -l -v
+# Deve mostrar Ubuntu com VERSION 2
 ```
-
-Deve aparecer `Ubuntu` com `VERSION 2`.
 
 ---
 
 ### 3.2 Instalar Docker Desktop
 
-1. Baixe em: [https://www.docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop)
+1. Baixe em [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop)
 2. Instale marcando **"Use WSL 2 based engine"**
-3. Após instalar, abra o Docker Desktop:
-   - Vá em `Settings → Resources → WSL Integration`
-   - Ative a integração com **Ubuntu**
-   - Clique em **Apply & Restart**
+3. Abra o Docker Desktop → `Settings → Resources → WSL Integration` → ative **Ubuntu** → **Apply & Restart**
 
-Verifique (em PowerShell):
+Verifique (PowerShell):
 
 ```powershell
 docker run hello-world
@@ -107,65 +115,96 @@ docker run hello-world
 
 ---
 
-### 3.3 Criar a Estrutura de Diretórios no WSL2
+### 3.3 Criar Estrutura de Diretórios no WSL2
 
-Abra o Ubuntu (pelo menu Iniciar ou digitando `wsl` no PowerShell) e execute:
+Abra o Ubuntu (menu Iniciar → Ubuntu) e execute:
 
 ```bash
 mkdir -p ~/pantherflow-clinical/processamento
 mkdir -p ~/pantherflow-clinical/datasets
+mkdir -p ~/pantherflow-clinical/datasets/painel_twist/output_InterpriseUSA_UFCSPA_pulmao_TE-97054821_hg38
 ```
 
 ---
 
-### 3.4 Construir a Imagem Docker
+### 3.4 Imagens Docker
 
-No terminal Ubuntu:
+O PantherFlow usa **3 imagens Docker**. Todas precisam estar disponíveis antes de iniciar uma análise.
 
-```bash
-cd ~
-git clone https://github.com/caiogabrielsm/pantherflow-clinical.git
-cd pantherflow-clinical
+#### Imagem principal (pantherflow-bioinfo)
+
+Contém BWA, samtools, GATK4 (Mutect2), VarScan2, bcftools, snpEff e SnpSift.
+
+A partir da raiz do projeto (PowerShell no Windows):
+
+```powershell
 docker build -t pantherflow-bioinfo .
 ```
 
-> O build demora 20–40 minutos na primeira vez (baixa ~5 GB de ferramentas bioinformáticas).
+> O build demora **20–40 minutos** na primeira vez (~5 GB de download de ferramentas bioinformáticas).
 
 Verifique:
 
-```bash
-docker images | grep pantherflow-bioinfo
+```powershell
+docker images | findstr pantherflow-bioinfo
 ```
+
+#### Imagem fastp (pré-processamento)
+
+```powershell
+docker pull staphb/fastp:latest
+```
+
+#### Imagem LoFreq (terceiro caller)
+
+```powershell
+docker pull quay.io/biocontainers/lofreq:2.1.5--py310h8360dc1_7
+```
+
+> As imagens fastp e LoFreq são baixadas automaticamente do Docker Hub/Biocontainers. O pull manual garante que estão disponíveis antes da primeira análise.
 
 ---
 
 ### 3.5 Datasets de Referência
 
-Os datasets **não estão no repositório** por serem muito grandes. Devem ser colocados em:
+Os datasets são muito grandes para estar no repositório. Devem ser colocados em:
 
 ```
 \\wsl.localhost\Ubuntu\home\SEU_USUARIO\pantherflow-clinical\datasets\
 ```
 
-Você pode acessar essa pasta pelo Explorador de Arquivos do Windows digitando o caminho acima na barra de endereços.
+Acesse essa pasta pelo Explorador de Arquivos do Windows digitando o caminho acima.
 
-#### Datasets obrigatórios
+#### Datasets obrigatórios (hg38)
 
-| Arquivo | Tamanho | Fonte |
+| Arquivo | Tamanho aprox. | Fonte |
 |---|---|---|
-| `Homo_sapiens_assembly38.fasta` + 6 índices | ~10 GB | [GATK Resource Bundle](https://gatk.broadinstitute.org/hc/en-us/articles/360035890811) |
+| `Homo_sapiens_assembly38.fasta` + 6 índices (`.amb .ann .bwt .pac .sa .fai .dict`) | ~10 GB | [GATK Resource Bundle (Google)](https://console.cloud.google.com/storage/browser/genomics-public-data/resources/broad/hg38/v0) |
 | `af-only-gnomad.hg38.vcf.gz` + `.tbi` | ~4 GB | GATK Resource Bundle |
 | `small_exac_common_3.hg38.vcf.gz` + `.tbi` | ~500 MB | GATK Resource Bundle |
 | `clinvar.vcf.gz` + `.tbi` | ~500 MB | [NCBI ClinVar](https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/) |
-| `Cosmic_GenomeScreensMutant_v103_GRCh38.vcf.gz` + `.tbi` | ~1 GB | [COSMIC](https://cancer.sanger.ac.uk/cosmic) |
-| `snpeff_data/GRCh38.99/` | ~8 GB | `snpEff download GRCh38.99` |
+| `Cosmic_GenomeScreensMutant_v103_GRCh38.vcf.gz` + `.tbi` | ~1 GB | [COSMIC](https://cancer.sanger.ac.uk/cosmic/download) (requer cadastro gratuito) |
+| `snpeff_data/GRCh38.99/` | ~8 GB | Baixar via container (ver abaixo) |
 | `1000g_pon.hg38.vcf.gz` + `.tbi` | ~2 GB | GATK Resource Bundle |
 | `chr_name_map.txt` | < 1 KB | Criar manualmente (ver abaixo) |
-| Arquivo BED do painel | < 1 MB | Fornecido pelo fabricante |
 
-**Criar o `chr_name_map.txt`** (copie e cole no terminal Ubuntu):
+**Total estimado: ~26 GB** (mais espaço de trabalho por amostra: ~50–100 GB por análise WES)
+
+#### Download do banco snpEff
 
 ```bash
+# No terminal Ubuntu
+docker run --rm -v ~/pantherflow-clinical/datasets:/datasets \
+  pantherflow-bioinfo \
+  snpEff download GRCh38.99 -dataDir /datasets/snpeff_data
+```
+
+> Demora ~30 minutos dependendo da conexão (~8 GB).
+
+#### Criar chr_name_map.txt
+
+```bash
+# No terminal Ubuntu
 cat > ~/pantherflow-clinical/datasets/chr_name_map.txt << 'EOF'
 1	chr1
 2	chr2
@@ -197,29 +236,54 @@ EOF
 
 ---
 
+### 3.6 Arquivo BED do Painel
+
+O arquivo BED delimita as regiões-alvo do seu painel de captura. **Sem ele a pipeline não encontra variantes.**
+
+O caminho do BED está definido em [backend/pipeline.py](backend/pipeline.py) na linha:
+
+```python
+_BED_TWIST = (
+    "painel_twist/output_InterpriseUSA_UFCSPA_pulmao_TE-97054821_hg38/"
+    "Target_bases_covered_by_probes_InterpriseUSA_UFCSPA_pulmao_TE-97054821_hg38_250708161615.bed"
+)
+```
+
+**Se você usa um painel diferente**, substitua esse valor pelo caminho relativo ao diretório `datasets/` do seu painel. Exemplo para um AmpliSeq:
+
+```python
+_BED_TWIST = "alvo_ampliseq_6col.bed"
+```
+
+Salve o arquivo BED em:
+
+```
+\\wsl.localhost\Ubuntu\home\SEU_USUARIO\pantherflow-clinical\datasets\
+```
+
+---
+
 ## 4. Configuração do Arquivo `.env`
 
-Na pasta `backend/` do projeto (Windows), crie um arquivo chamado `.env`:
+Na pasta `backend/` do projeto, crie um arquivo chamado `.env`:
 
 ```
 backend\.env
 ```
 
-Com o seguinte conteúdo:
+Conteúdo:
 
 ```env
 WSL_USER=seu_usuario_ubuntu
 ```
 
-Substitua `seu_usuario_ubuntu` pelo nome de usuário que você criou na etapa 3.1.
-
-**Exemplo:**
+Substitua `seu_usuario_ubuntu` pelo nome criado na etapa 3.1. Exemplo:
 
 ```env
 WSL_USER=joao
 ```
 
-> Este arquivo **nunca é enviado ao GitHub** (está no `.gitignore`) por questões de segurança.
+> Este arquivo **nunca é enviado ao GitHub** (está no `.gitignore`).
 
 ---
 
@@ -227,13 +291,13 @@ WSL_USER=joao
 
 ### Pré-condição obrigatória
 
-O **Docker Desktop** precisa estar aberto e em execução (ícone na bandeja do sistema) antes de iniciar o PantherFlow.
+O **Docker Desktop** precisa estar aberto e rodando (ícone verde na bandeja do sistema) antes de iniciar o PantherFlow.
 
-### Versão instalada (a partir do instalador .exe)
+### Versão instalada (instalador .exe)
 
-Dê um **duplo clique** no ícone do PantherFlow Clinical na área de trabalho.
+Dê **duplo clique** no ícone do PantherFlow Clinical na área de trabalho.
 
-Uma tela de carregamento aparecerá por ~5–15 segundos enquanto o motor bioinformático inicializa. Após isso, a interface abre automaticamente.
+A tela de splash aparece enquanto o motor inicializa (~5–15 segundos).
 
 ### Versão de desenvolvimento
 
@@ -243,53 +307,54 @@ Ver [seção 7](#7-para-desenvolvedores--rodando-em-modo-dev).
 
 ## 6. Como Usar — Passo a Passo
 
-### 6.1 Verificar Status do Sistema
+### 6.1 Verificar Status
 
-O **Dashboard** é exibido ao abrir o software. Verifique:
-- Ícone de Docker: deve estar verde ("Online")
-- Tabela de análises anteriores
+O **Dashboard** inicial mostra o status do Docker (deve estar verde) e as análises anteriores.
 
-### 6.2 Iniciar Nova Análise
+### 6.2 Nova Análise
 
-1. Clique em **"Nova Análise"** na barra lateral
+1. **Nova Análise** na barra lateral
 2. Preencha:
    - **ID do Paciente** — identificador anonimizado (ex: `PAC-2026-001`)
    - **Sexo Biológico** — M ou F
    - **Médico Solicitante**
-   - **Protocolo** — selecionado automaticamente como ONCOLOGY
-3. Faça upload:
-   - **R1 (Forward):** arquivo `_R1.fastq.gz`
-   - **R2 (Reverse):** arquivo `_R2.fastq.gz`
+3. Faça upload dos arquivos:
+   - **R1 (Forward):** `_R1.fastq.gz`
+   - **R2 (Reverse):** `_R2.fastq.gz`
 4. (Opcional) Configure parâmetros:
-   - **Padrão Clínico GDC** — recomendado (VAF ≥ 5%, cobertura ≥ 100x)
-   - **Customizado** — para pesquisa
-5. Clique em **"Iniciar Análise"**
+   - **Padrão Clínico GDC** — recomendado (VAF ≥ 5%, cobertura ≥ 100×)
+   - **Customizado** — para pesquisa (ajusta VAF mínimo e profundidade mínima)
+5. **Iniciar Análise**
 
-### 6.3 Monitorar a Execução
+### 6.3 Monitorar
 
-A página **Monitor** exibe:
-- Logs em tempo real da pipeline
-- Consumo de hardware (CPU, RAM, Disco)
+A página **Monitor** mostra logs em tempo real e consumo de hardware.
 
-**Tempo de execução esperado:**
-- Painel de amplicons (~400 genes): 30 min – 2 horas
-- WES (exoma completo): 2 – 6 horas
-- WGS (genoma inteiro): 6 – 24 horas
+**Tempos de execução esperados** (com hardware recomendado):
 
-### 6.4 Visualizar o Laudo
+| Tipo de amostra | Tempo estimado |
+|---|---|
+| Painel de captura (~400 genes, Twist) | 1 – 3 horas |
+| WES (exoma completo) | 4 – 8 horas |
+| WGS (genoma inteiro) | 12 – 24 horas |
 
-Após o status mudar para **"Completed"**:
+> Com hardware mínimo (32 GB RAM, 8 cores), multiplicar por 2–3×.
 
-1. Clique na análise no Dashboard
-2. **Aba "Laudo Clínico":**
-   - Contagens de variantes por caller (VarScan2 / Mutect2 / LoFreq / Consenso)
-   - Gráfico de dispersão VAF × Profundidade
-   - Heatmap de densidade alélica
-   - Tabelas de variantes com anotações ClinVar, COSMIC e gnomAD
-3. **Aba "Controle de Qualidade":**
-   - Telemetria de tempo por etapa
-   - Relatórios FastQC e Qualimap
-4. Clique em **"Imprimir / Exportar PDF"** para salvar o laudo
+### 6.4 Laudo
+
+Após status **"Completed"** no Dashboard:
+
+1. Clique em **Resultado**
+2. **Aba Resultados:**
+   - Painel de genes relevantes (ALK, BRAF, EGFR, KRAS, etc.)
+   - Variantes por caller: VarScan2 / Mutect2 / LoFreq / **Consenso**
+   - Filtro automático: Variantes Relevantes (HIGH/MODERATE + ClinVar patogênicas) e Todas as Variantes
+   - Anotações: ClinVar, COSMIC, gnomAD (frequência populacional)
+3. **Aba Controle de Qualidade:**
+   - Profundidade média do painel
+   - Alvos sem cobertura (dropout) e alvos críticos (< 30×)
+   - Relatório FastQC
+4. **Exportar PDF** para salvar o laudo
 
 ---
 
@@ -308,43 +373,36 @@ Após o status mudar para **"Completed"**:
 git clone https://github.com/caiogabrielsm/pantherflow-clinical.git
 cd pantherflow-clinical
 
-# Dependências do frontend
+# Frontend
 npm install
 
-# Dependências do backend
+# Backend
 cd backend
 python -m venv venv
-venv\Scripts\activate
+venv\Scripts\activate        # Windows PowerShell
 pip install -r requirements.txt
 ```
 
-Crie `backend\.env`:
-
-```env
-WSL_USER=seu_usuario_ubuntu
-```
+Crie `backend\.env` conforme a [seção 4](#4-configuração-do-arquivo-env).
 
 ### Executar
 
-Abra **dois terminais**:
-
-**Terminal 1 — Backend:**
-
 ```bash
-cd backend
-venv\Scripts\activate
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
-```
-
-**Terminal 2 — Frontend + Electron:**
-
-```bash
+# Na raiz do projeto — inicia Vite + uvicorn + Electron automaticamente
 npm run electron:dev
 ```
+
+> O Electron spawna o Vite dev server e o uvicorn automaticamente. Aguarde a tela de splash desaparecer.
 
 ---
 
 ## 8. Para Desenvolvedores — Build e Empacotamento
+
+### Pré-requisito: Modo Desenvolvedor do Windows
+
+Necessário para o electron-builder criar symlinks durante o empacotamento:
+
+`Configurações → Sistema → Para Desenvolvedores → Modo Desenvolvedor → ON`
 
 ### Passo 1 — Empacotar backend com PyInstaller
 
@@ -358,123 +416,131 @@ pyinstaller main.spec --distpath dist-pyinstaller --workpath build-pyinstaller -
 
 Resultado: `backend/dist-pyinstaller/main/main.exe`
 
-### Passo 2 — Build completo + instalador
+### Passo 2 — Build React + instalador NSIS
 
 ```bash
 # Na raiz do projeto
 npm run dist
 ```
 
-Instalador gerado em: `release/PantherFlow Clinical Setup 1.0.0.exe`
+Instalador gerado em: `release\PantherFlow Clinical Setup 1.0.0.exe`
 
-### Estrutura do pacote instalado
-
-```
-resources/
-├── backend/
-│   ├── main.exe          ← FastAPI (PyInstaller)
-│   └── config/
-└── app/
-    ├── electron.cjs      ← Processo principal Electron
-    ├── dist/             ← React compilado
-    └── logo.png
-```
-
-> Os datasets de referência e a imagem Docker **não são incluídos** no instalador.
-> Precisam ser configurados conforme a [seção 3](#3-instalação-do-ambiente--primeira-vez).
+> O instalador **não inclui** datasets, imagens Docker ou WSL2.
+> O usuário final precisa configurar o ambiente conforme a [seção 3](#3-instalação-do-ambiente--primeira-vez).
 
 ---
 
 ## 9. Arquitetura do Sistema
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Windows Host                                            │
-│                                                          │
-│  ┌──────────────┐      ┌──────────────────────────────┐  │
-│  │   Electron   │      │  FastAPI (uvicorn :8000)     │  │
-│  │  (spawna o   │◄────►│  main.py · pipeline.py       │  │
-│  │   backend)   │      │  SQLite (pantherflow.db)     │  │
-│  └──────┬───────┘      └──────────────┬───────────────┘  │
-│         │                             │                   │
-│  ┌──────▼──────┐                      │ subprocess        │
-│  │  React SPA  │                      │ wsl docker run    │
-│  │  HashRouter │                      ▼                   │
-│  │  Recharts   │      ┌──────────────────────────────┐   │
-│  └─────────────┘      │       WSL2 — Ubuntu          │   │
-│                       │  Docker: pantherflow-bioinfo  │   │
-│                       │  BWA · samtools · GATK4       │   │
-│                       │  VarScan2 · LoFreq · snpEff   │   │
-│                       └──────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│  Windows Host                                               │
+│                                                             │
+│  ┌──────────────┐       ┌──────────────────────────────┐   │
+│  │   Electron   │       │  FastAPI (uvicorn :8000)     │   │
+│  │  spawna o   │◄──────►│  main.py · pipeline.py       │   │
+│  │   backend    │       │  SQLite (pantherflow.db)     │   │
+│  └──────┬───────┘       └──────────────┬───────────────┘   │
+│         │                              │                    │
+│  ┌──────▼──────┐                       │ subprocess         │
+│  │  React SPA  │                       │ wsl docker run     │
+│  │  HashRouter │                       ▼                    │
+│  │  Recharts   │       ┌──────────────────────────────┐    │
+│  └─────────────┘       │       WSL2 — Ubuntu          │    │
+│                        │                              │    │
+│                        │  🐳 pantherflow-bioinfo      │    │
+│                        │     BWA · samtools · GATK4   │    │
+│                        │     VarScan2 · snpEff · bcf  │    │
+│                        │                              │    │
+│                        │  🐳 staphb/fastp             │    │
+│                        │     Pré-processamento        │    │
+│                        │                              │    │
+│                        │  🐳 biocontainers/lofreq     │    │
+│                        │     Terceiro caller          │    │
+│                        └──────────────────────────────┘    │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 10. Pipeline Bioinformática
 
-| Etapa | Ferramenta | Descrição |
+| Etapa | Ferramenta | Imagem Docker |
 |---|---|---|
-| 0 | Validação | Verifica índices BWA e datasets |
-| 0.5 | fastp | QC e trimagem dos reads |
-| 1+2 | BWA-MEM + samtools | Alinhamento → BAM (pipe, sem .sam) |
-| 2.5 | Qualimap | QC do BAM (cobertura, distribuição) |
-| 3 | samtools flagstat | Taxa de mapeamento |
-| 4 | VarScan2 | Variant calling pileup-based |
-| 4.5 | Mutect2 | Variant calling probabilístico (tumor-only) |
-| 4.6 | LoFreq | Variant calling sensível (baixo VAF) |
-| 4.55 | LearnReadOrientationModel | Correção artefatos OxoG/FFPE |
-| 4.56 | GetPileupSummaries + CalculateContamination | Modelo GDC |
-| 4.6 | FilterMutectCalls | Filtragem de artefatos GATK |
-| 4.7 | bcftools norm | Normalização de INDELs |
-| 5 | Consenso | Interseção dos 3 callers |
-| 5.5 | snpEff | Anotação funcional (impacto, HGVS) |
-| 5.6 | SnpSift ClinVar | Significância clínica |
-| 5.7 | SnpSift COSMIC | Frequência em tumores |
-| 5.8 | SnpSift gnomAD | Frequência poblacional |
-| 6 | Laudo | Persistência no banco + laudo |
+| QC + trimagem | fastp | staphb/fastp |
+| Alinhamento → BAM | BWA-MEM + samtools (pipe) | pantherflow-bioinfo |
+| QC cobertura | samtools coverage + bedcov | pantherflow-bioinfo |
+| Variant calling 1 | VarScan2 (pileup-based) | pantherflow-bioinfo |
+| Variant calling 2 | Mutect2 (tumor-only, GATK4) | pantherflow-bioinfo |
+| Variant calling 3 | LoFreq (baixo VAF) | biocontainers/lofreq |
+| Filtragem GATK | FilterMutectCalls + LearnReadOrientationModel | pantherflow-bioinfo |
+| Modelo contaminação | GetPileupSummaries + CalculateContamination (GDC) | pantherflow-bioinfo |
+| Normalização | bcftools norm | pantherflow-bioinfo |
+| Consenso | Interseção VarScan2 ∩ Mutect2 ∩ LoFreq | — (Python) |
+| Anotação funcional | snpEff GRCh38.99 | pantherflow-bioinfo |
+| Anotação clínica | SnpSift ClinVar + COSMIC + gnomAD | pantherflow-bioinfo |
 
-**Regras biológicas:**
+**Regras biológicas respeitadas:**
 
-- Sem remoção de duplicatas (AmpliSeq — leituras duplicadas são legítimas)
-- `mpileup -B` obrigatório (desativa BAQ para amplicons)
-- Consenso = interseção para máxima especificidade clínica
-- FilterMutectCalls obrigatório antes de usar VCF do Mutect2
+- ❌ Sem remoção de duplicatas (amplicons/captura — leituras duplicadas são biológicas)
+- ✅ `mpileup -B` obrigatório (desativa BAQ para painéis de amplicons)
+- ✅ Consenso = interseção (nunca união) — máxima especificidade clínica
+- ✅ FilterMutectCalls obrigatório antes de usar o VCF do Mutect2
+- ✅ bcftools norm antes do consenso (INDELs com representação diferente = false negatives)
 
 ---
 
 ## 11. Solução de Problemas
 
-### Docker aparece como "Offline" no software
+### Docker aparece como "Offline"
 
 - Confirme que o Docker Desktop está aberto (ícone na bandeja)
-- Aguarde ~30s após abrir o Docker Desktop
+- Aguarde ~30s após abrir (Docker demora para inicializar)
 - Teste: `docker ps` no PowerShell
 
-### Pipeline para no meio / sem progresso
+### Pipeline para / sem progresso por horas
 
-- Veja os logs no Monitor — Mutect2 e BWA em WES levam 2–6h (normal)
-- Se aparecer `[WATCHDOG]` nos logs, o processo foi encerrado por timeout → problema com datasets
+- Veja os logs no Monitor — Mutect2 em WES pode levar 4–8h (normal)
+- Se aparecer `[WATCHDOG]` nos logs, o processo foi encerrado por timeout de inatividade — geralmente indica dataset faltando ou corrompido
+
+### "Não encontrou variantes" / 0 variantes no consenso
+
+1. Confirme que o arquivo BED do painel está correto e no caminho esperado em `pipeline.py`
+2. Verifique se o genoma de referência é **hg38** (o pipeline não funciona com hg19 sem ajuste)
+3. Veja os logs de VarScan2 e Mutect2 no Monitor para erros específicos
+
+### Mutect2 termina com erro de memória
+
+- A VM da JVM precisa de mais RAM do que disponível
+- Solução: feche outros programas e certifique-se de ter **32 GB livres** antes de iniciar
+- Alternativa: desative temporariamente o LoFreq (amostra menor)
 
 ### "WSL_PROCESSAMENTO não encontrado"
 
 ```bash
-# No Ubuntu, verifique se a pasta existe:
+# No Ubuntu, verifique:
 ls ~/pantherflow-clinical/processamento
 ```
 
-- Confirme que `WSL_USER` no `.env` é igual ao seu usuário Ubuntu
+Confira se `WSL_USER` no `.env` corresponde ao seu usuário Ubuntu.
 
 ### Tela em branco ao abrir o software
 
 - Aguarde mais 15 segundos (backend ainda inicializando)
-- Verifique `backend/pantherflow.log` para erros de startup
+- Verifique `backend\pantherflow.log` para erros de startup
+- Em modo dev, confirme que `npm run electron:dev` foi executado na raiz do projeto
 
-### 0 variantes no consenso
+### Imagem Docker não encontrada (pantherflow-bioinfo)
 
-- Confirme que o arquivo BED do painel está correto
-- Verifique se o genoma de referência é hg38 (não hg19)
-- Abra os logs de VarScan2 e Mutect2 no Monitor
+```powershell
+docker images | findstr pantherflow-bioinfo
+```
+
+Se não aparecer, rebuilde:
+
+```powershell
+docker build -t pantherflow-bioinfo .
+```
 
 ---
 
