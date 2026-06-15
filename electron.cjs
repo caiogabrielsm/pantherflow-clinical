@@ -4,51 +4,74 @@ const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
 
-let mainWindow;
-let splashWindow;
-let backendProcess;
+let mainWindow, splashWindow;
+let backendProcess, viteProcess;
 
-const BACKEND_PORT = 8000;
-const BACKEND_HEALTH_URL = `http://localhost:${BACKEND_PORT}/api/health`;
-const BACKEND_TIMEOUT_MS = 60000; // 60s para o uvicorn subir
+// ── Utilitários ───────────────────────────────────────────────────────────────
 
-// Aguarda o backend responder em /api/health antes de carregar a UI.
-// Evita a tela branca/erro de conexão que aparecia quando o Electron abria
-// antes do uvicorn estar pronto para aceitar conexões.
-function waitForBackend(url, timeoutMs) {
+function waitFor(url, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeoutMs;
-
-    function tentativa() {
+    function attempt() {
       http.get(url, (res) => {
-        if (res.statusCode === 200) {
-          resolve();
-        } else {
-          agendar();
-        }
-        res.resume(); // drena o body para liberar o socket
+        res.resume();
+        resolve(); // qualquer resposta HTTP = serviço no ar
       }).on('error', () => {
-        agendar();
+        if (Date.now() >= deadline) reject(new Error(`Timeout esperando: ${url}`));
+        else setTimeout(attempt, 700);
       });
     }
-
-    function agendar() {
-      if (Date.now() >= deadline) {
-        reject(new Error(`Backend não respondeu em ${timeoutMs / 1000}s`));
-      } else {
-        setTimeout(tentativa, 600);
-      }
-    }
-
-    tentativa();
+    attempt();
   });
 }
 
-function startBackend() {
-  // Em dev o usuário sobe o backend com `uvicorn main:app` manualmente.
-  // Em produção (app empacotado) o exe fica em resources/backend/main.exe.
-  if (!app.isPackaged) return;
+function spawnLog(cmd, args, opts = {}) {
+  const p = spawn(cmd, args, { windowsHide: true, ...opts });
+  p.stdout?.on('data', (d) => process.stdout.write(String(d)));
+  p.stderr?.on('data', (d) => process.stderr.write(String(d)));
+  p.on('exit', (code) => console.log(`[panther] "${cmd}" encerrou (code=${code})`));
+  return p;
+}
 
+// ── Inicialização em modo DESENVOLVIMENTO ─────────────────────────────────────
+// Electron inicia o Vite e o uvicorn — o usuário só precisa rodar "npm run electron:dev".
+
+async function startDev() {
+  const root = __dirname;
+  const backendDir = path.join(root, 'backend');
+
+  // Prefere o Python do venv; se não existir, usa o python do PATH
+  const venvPython = path.join(backendDir, 'venv', 'Scripts', 'python.exe');
+  const pythonExe = fs.existsSync(venvPython) ? venvPython : 'python';
+
+  console.log('[panther] Iniciando Vite dev server...');
+  viteProcess = spawnLog('npm', ['run', 'dev'], {
+    cwd: root,
+    shell: true,
+  });
+
+  console.log('[panther] Iniciando backend FastAPI...');
+  backendProcess = spawnLog(pythonExe, [
+    '-m', 'uvicorn', 'main:app',
+    '--host', '127.0.0.1',
+    '--port', '8000',
+    '--reload',
+  ], { cwd: backendDir });
+
+  // Aguarda os dois serviços antes de abrir a janela
+  await Promise.all([
+    waitFor('http://localhost:5173', 30000).catch(() =>
+      console.warn('[panther] Vite demorou mais que 30s')
+    ),
+    waitFor('http://localhost:8000/api/health', 60000).catch(() =>
+      console.warn('[panther] Backend demorou mais que 60s')
+    ),
+  ]);
+}
+
+// ── Inicialização em modo PRODUÇÃO (app empacotado) ───────────────────────────
+
+async function startProd() {
   const backendExe = path.join(process.resourcesPath, 'backend', 'main.exe');
   const backendCwd = path.join(process.resourcesPath, 'backend');
 
@@ -57,20 +80,15 @@ function startBackend() {
     return;
   }
 
-  console.log(`[panther] Iniciando backend: ${backendExe}`);
+  console.log('[panther] Iniciando backend (produção)...');
+  backendProcess = spawnLog(backendExe, [], { cwd: backendCwd });
 
-  backendProcess = spawn(backendExe, [], {
-    cwd: backendCwd,
-    detached: false,
-    windowsHide: true,
-  });
-
-  backendProcess.stdout.on('data', (d) => process.stdout.write(`[backend] ${d}`));
-  backendProcess.stderr.on('data', (d) => process.stderr.write(`[backend] ${d}`));
-  backendProcess.on('exit', (code) =>
-    console.log(`[panther] Backend encerrou com código ${code}`)
+  await waitFor('http://localhost:8000/api/health', 60000).catch(() =>
+    console.warn('[panther] Backend demorou mais que 60s')
   );
 }
+
+// ── Tela de splash ────────────────────────────────────────────────────────────
 
 function createSplash() {
   splashWindow = new BrowserWindow({
@@ -82,39 +100,29 @@ function createSplash() {
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });
 
-  const html = `<!DOCTYPE html>
-<html>
-<body style="margin:0;background:#0f172a;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;height:100vh;
-  font-family:system-ui,sans-serif;color:white;user-select:none;">
+  const html = `<!DOCTYPE html><html><body style="margin:0;background:#0f172a;
+display:flex;flex-direction:column;align-items:center;justify-content:center;
+height:100vh;font-family:system-ui,sans-serif;color:white;user-select:none;">
   <div style="font-size:42px;margin-bottom:4px">🐆</div>
   <div style="font-size:22px;font-weight:700;color:#818cf8;letter-spacing:-0.5px">
-    PantherFlow Clinical
-  </div>
+    PantherFlow Clinical</div>
   <div style="font-size:12px;color:#64748b;margin:6px 0 28px">
-    Plataforma de Genômica Clínica
-  </div>
+    Plataforma de Genômica Clínica</div>
   <div style="width:220px;height:3px;background:#1e293b;border-radius:99px;overflow:hidden">
-    <div id="bar" style="width:20%;height:100%;background:#6366f1;
-      border-radius:99px;transition:width .4s ease"></div>
-  </div>
-  <div id="msg" style="font-size:11px;color:#475569;margin-top:14px">
-    Iniciando motor bioinformático...
-  </div>
+    <div id="b" style="width:15%;height:100%;background:#6366f1;border-radius:99px;
+      transition:width .5s ease"></div></div>
+  <div style="font-size:11px;color:#475569;margin-top:14px">Iniciando serviços...</div>
   <script>
-    let w = 20;
-    setInterval(() => {
-      w = Math.min(w + Math.random() * 8, 88);
-      document.getElementById('bar').style.width = w + '%';
-    }, 600);
+    let w=15;
+    setInterval(()=>{w=Math.min(w+Math.random()*7,88);
+    document.getElementById('b').style.width=w+'%'},700);
   </script>
-</body>
-</html>`;
+</body></html>`;
 
-  splashWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-  );
+  splashWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
+
+// ── Janela principal ──────────────────────────────────────────────────────────
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -123,8 +131,8 @@ function createMainWindow() {
     minWidth: 900,
     minHeight: 600,
     title: 'PantherFlow Clinical',
-    icon: path.join(__dirname, 'logo.png'),
-    show: false, // só exibe após ready-to-show para evitar flash branco
+    icon: path.join(__dirname, 'logo.ico'),
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -134,13 +142,9 @@ function createMainWindow() {
   mainWindow.setMenuBarVisibility(false);
 
   if (app.isPackaged) {
-    // Produção: carrega o React compilado localmente via file://
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
   } else {
-    // Dev: carrega o Vite dev server
-    const devUrl =
-      process.env.VITE_DEV_SERVER_URL || `http://localhost:5173`;
-    mainWindow.loadURL(devUrl);
+    mainWindow.loadURL('http://localhost:5173');
   }
 
   mainWindow.once('ready-to-show', () => {
@@ -149,33 +153,26 @@ function createMainWindow() {
     mainWindow.focus();
   });
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+  mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-app.whenReady().then(async () => {
-  if (app.isPackaged) {
-    createSplash();
-    startBackend();
+// ── Ciclo de vida do app ──────────────────────────────────────────────────────
 
-    try {
-      await waitForBackend(BACKEND_HEALTH_URL, BACKEND_TIMEOUT_MS);
-      console.log('[panther] Backend pronto — abrindo interface.');
-    } catch (err) {
-      console.error('[panther] Timeout aguardando backend:', err.message);
-      // Abre mesmo assim; o frontend mostrará o erro de conexão
-    }
+app.whenReady().then(async () => {
+  createSplash();
+
+  if (app.isPackaged) {
+    await startProd();
+  } else {
+    await startDev();
   }
 
   createMainWindow();
 });
 
 app.on('window-all-closed', () => {
-  if (backendProcess) {
-    backendProcess.kill();
-    backendProcess = null;
-  }
+  backendProcess?.kill();
+  viteProcess?.kill();
   if (process.platform !== 'darwin') app.quit();
 });
 

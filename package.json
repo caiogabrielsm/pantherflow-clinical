@@ -9,7 +9,7 @@
     "build": "vite build",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"npm run dev\" \"electron .\"",
+    "electron:dev": "electron .",
     "electron:prod": "npm run build && electron .",
     "dist": "npm run build && electron-builder"
   },
@@ -37,7 +37,7 @@
       "target": [
         { "target": "nsis", "arch": ["x64"] }
       ],
-      "icon": "logo.png"
+      "icon": "logo.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -45,8 +45,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "PantherFlow Clinical",
-      "installerIcon": "logo.png",
-      "uninstallerIcon": "logo.png"
+      "installerIcon": "logo.ico",
+      "uninstallerIcon": "logo.ico"
     }
   },
   "dependencies": {
