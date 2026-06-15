@@ -1,31 +1,27 @@
 import React from 'react';
 import { GiPawPrint } from 'react-icons/gi';
 
-
 export default function StatusBadge({ status }) {
-  const isCompleted = status === 'completed';
-  const isFailed    = status === 'failed';
-
-  if (isCompleted) {
+  if (status === 'completed') {
     return (
-      <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/20">
+      <span className="inline-flex items-center px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider border border-emerald-600 text-emerald-700 bg-transparent">
         Concluído
       </span>
     );
   }
 
-  if (isFailed) {
+  if (status === 'failed') {
     return (
-      <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-red-50 text-red-700 ring-1 ring-red-600/20">
+      <span className="inline-flex items-center px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider border border-red-500 text-red-600 bg-transparent">
         Falha
       </span>
     );
   }
 
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-medium bg-amber-50 text-amber-700 ring-1 ring-amber-500/30">
-      <GiPawPrint className="animate-pulse text-amber-500 w-5 h-5 mr-2" />
-      {status === 'processing' ? 'Processando...' : status}
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider border border-amber-500 text-amber-600 bg-transparent">
+      <GiPawPrint className="animate-pulse w-3 h-3" />
+      {status === 'processing' ? 'Processando' : status}
     </span>
   );
 }

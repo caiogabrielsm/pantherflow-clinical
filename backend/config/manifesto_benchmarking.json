@@ -1,0 +1,275 @@
+{
+  "_meta": {
+    "descricao": "Fonte de verdade estática: mapeia cada amostra ao seu laudo Ion Reporter (TSV) e às análises PantherFlow disponíveis (UUID do VCF em data/auditoria/).",
+    "convencao_rotulo": "DP{min_dp}_VAF{min_vaf_pct} — ex: DP20_VAF5 = min_dp=20, min_vaf=0.05",
+    "referencia_tsv": "hg19 (Ion Torrent Oncomine Comprehensive Plus)",
+    "referencia_vcf": "hg38 (PantherFlow Clinical — Mutect2 hard-filtered)"
+  },
+  "amostras": {
+    "Pul008": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul008_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF1",
+          "vcf_uuid": "daabe18c-c32f-404a-a574-939ebdeaf231",
+          "min_dp": 20,
+          "min_vaf": 0.01
+        },
+        {
+          "rotulo": "DP20_VAF5",
+          "vcf_uuid": "4b5f9828-247d-4bc6-bb4f-71d9ba6d43ee",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP30_VAF2",
+          "vcf_uuid": "16a49bbf-4c83-4acb-94ea-1aa76c36563b",
+          "min_dp": 30,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP30_VAF5",
+          "vcf_uuid": "c00ff72d-189a-4cef-9081-77ca39832318",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        }
+      ]
+    },
+    "Pul045": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul045_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF5",
+          "vcf_uuid": "9c1f5146-6e23-4943-a746-ba813fd14002",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP20_VAF5_b",
+          "vcf_uuid": "ef8aea62-ce58-4063-9e6c-1831e2bec2b3",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP30_VAF2",
+          "vcf_uuid": "3b6ac6d5-686f-4025-8603-afe4675c89a5",
+          "min_dp": 30,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP30_VAF5",
+          "vcf_uuid": "b440a9f3-28d9-4a79-990e-0ef399ffea9c",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP20_VAF5_c",
+          "vcf_uuid": "c395c736-fcd7-4169-89e9-57895e30e958",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        }
+      ]
+    },
+    "Pul063": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul063_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF2",
+          "vcf_uuid": "fd5eb136-e1a1-4ae0-bab5-dadc98196377",
+          "min_dp": 20,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP20_VAF5",
+          "vcf_uuid": "b9756d8b-1f94-4cfb-9af6-bb297c5b34b0",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP30_VAF2",
+          "vcf_uuid": "b6921b64-574b-4b4f-bbc9-2fa1b6b1b257",
+          "min_dp": 30,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP30_VAF5",
+          "vcf_uuid": "a98b4d9d-0e6c-40d1-98a2-75e387a2169c",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        }
+      ]
+    },
+    "Pul087": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul087_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF1",
+          "vcf_uuid": "927395ec-abc4-4a20-9fc2-f39e43bb3f55",
+          "min_dp": 20,
+          "min_vaf": 0.01
+        },
+        {
+          "rotulo": "DP20_VAF5",
+          "vcf_uuid": "ead7c071-3ff6-4dc2-8207-01fa377b97a9",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP30_VAF2",
+          "vcf_uuid": "0fc870f4-9ccf-4eb5-9926-f9a9e537433a",
+          "min_dp": 30,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP30_VAF5",
+          "vcf_uuid": "6cb91097-0a34-43c6-a90b-dd838043501a",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        }
+      ]
+    },
+    "Pul161": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul161_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF1",
+          "vcf_uuid": "9db98b81-249f-4e25-a8a8-6f956a980ace",
+          "min_dp": 20,
+          "min_vaf": 0.01
+        },
+        {
+          "rotulo": "DP20_VAF5",
+          "vcf_uuid": "d67ebdba-f591-4687-9f24-9e3eeee748af",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP30_VAF2",
+          "vcf_uuid": "970a7678-c006-4c3d-87b5-9def2de59109",
+          "min_dp": 30,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP30_VAF5",
+          "vcf_uuid": "1c6eff51-3649-478c-ab25-7475cda73ae2",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        }
+      ]
+    },
+    "Pul172": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul172_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF2",
+          "vcf_uuid": "73e7e3ef-8b0e-4062-bf1b-1865fc08d212",
+          "min_dp": 20,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP20_VAF5",
+          "vcf_uuid": "cb228353-a99b-4409-9b5d-f90e984b8513",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP30_VAF2",
+          "vcf_uuid": "06d5e7fc-4115-4270-b63f-1e8f0cb6ee9f",
+          "min_dp": 30,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP30_VAF5",
+          "vcf_uuid": "525e0464-2401-4892-9e45-ed79a4e4dbce",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        }
+      ]
+    },
+    "Pul175": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul175_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF2",
+          "vcf_uuid": "f12e8f5c-c4af-4ee1-b0bd-c98556309756",
+          "min_dp": 20,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP20_VAF5",
+          "vcf_uuid": "c4824104-2598-4eec-b5db-13d577af4aab",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP30_VAF2",
+          "vcf_uuid": "8b179c52-60cd-4bd8-ae4d-b513cb59ee33",
+          "min_dp": 30,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP30_VAF5",
+          "vcf_uuid": "662e381a-f80d-4f4f-a14c-d4e79aaba338",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "BAM_DP30_VAF3",
+          "vcf_uuid": "fa48c3f0-2846-48b7-8c54-07cdab29f805",
+          "min_dp": 30,
+          "min_vaf": 0.03
+        },
+        {
+          "rotulo": "BAM_DP30_VAF5",
+          "vcf_uuid": "7be77830-57b8-41f6-b1c0-1408064feaac",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        }
+      ]
+    },
+    "Pul178": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul178_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF2",
+          "vcf_uuid": "1bf0e8ad-9e9c-487b-ae63-da5767ac3b23",
+          "min_dp": 20,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP20_VAF5",
+          "vcf_uuid": "d9bc0071-fcc5-4c65-9daa-8532148b9d05",
+          "min_dp": 20,
+          "min_vaf": 0.05
+        },
+        {
+          "rotulo": "DP30_VAF2",
+          "vcf_uuid": "7a70bcbc-898f-4074-9430-3b61a5770023",
+          "min_dp": 30,
+          "min_vaf": 0.02
+        },
+        {
+          "rotulo": "DP30_VAF5",
+          "vcf_uuid": "af477765-a835-44d2-9e4b-bb460132c9e3",
+          "min_dp": 30,
+          "min_vaf": 0.05
+        }
+      ]
+    },
+    "Pul143": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/Pul143_filtered.tsv",
+      "runs": [
+        {
+          "rotulo": "DP20_VAF2",
+          "vcf_uuid": "0810e59e-ba15-4671-b24f-52bc31990c0f",
+          "min_dp": 20,
+          "min_vaf": 0.02
+        }
+      ]
+    },
+    "PUL143": {
+      "tsv_ion": "backend/data/real_data/ion_torrent/PUL143_ion.tsv",
+      "runs": []
+    },
+  }
+}

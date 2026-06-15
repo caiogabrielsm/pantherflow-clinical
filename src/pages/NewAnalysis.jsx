@@ -3,8 +3,7 @@ import UploadForm from '../features/analysis/ui/UploadForm'; // <-- Consumindo d
 
 export default function NewAnalysis() {
   return (
-    <div className="w-full py-6">
-      <h2 className="text-2xl font-bold text-slate-900 tracking-tight mb-6">Nova Análise Genômica</h2>
+    <div className="w-full">
       <UploadForm />
     </div>
   );

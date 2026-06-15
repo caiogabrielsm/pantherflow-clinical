@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Activity, Play, AlertTriangle, SlidersHorizontal, CheckCircle2, FolderOpen } from 'lucide-react';
+import { Upload, Activity, Play, AlertTriangle, FolderOpen } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../../common/data/api';
 
@@ -17,16 +17,19 @@ export default function UploadForm() {
   });
   const [fileR1, setFileR1] = useState(null);
   const [fileR2, setFileR2] = useState(null);
+  const [fileBam, setFileBam] = useState(null);
   const [sex, setSex] = useState('');
 
-  const [isCustomConfig, setIsCustomConfig] = useState(false);
+  const [ingestMode, setIngestMode] = useState('upload');
+  const [pathR1, setPathR1] = useState('');
+  const [pathR2, setPathR2] = useState('');
+
   const [pipelineConfig, setPipelineConfig] = useState({ vaf: 0.05, minDp: 100 });
 
   const [refGenomeVersion,  setRefGenomeVersion]  = useState('hg38');
   const [targetBedVersion, setTargetBedVersion] = useState('twist');
   const [ponFileVersion,   setPonFileVersion]   = useState('gatk_1000g');
 
-  // RADAR: CHECAGEM DO DOCKER
   useEffect(() => {
     const verifyInfra = async () => {
       const online = await api.checkDockerHealth();
@@ -42,38 +45,56 @@ export default function UploadForm() {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const isFormValid = formData.patientId && formData.doctor && formData.protocol && sex && fileR1 && fileR2;
+  const isFormValid = ingestMode === 'bam'
+    ? formData.patientId && formData.doctor && formData.protocol && sex && fileBam
+    : ingestMode === 'upload'
+      ? formData.patientId && formData.doctor && formData.protocol && sex && fileR1 && fileR2
+      : formData.patientId && formData.doctor && formData.protocol && sex && pathR1.trim();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!isDockerOnline) return alert("Ligue o Docker antes de processar!");
-    if (!fileR1 || !fileR2) return alert("Selecione os arquivos R1 e R2 antes de processar!");
+
+    if (ingestMode === 'upload' && (!fileR1 || !fileR2))
+      return alert("Selecione os arquivos R1 e R2 antes de processar!");
+    if (ingestMode === 'path' && !pathR1.trim())
+      return alert("Informe o caminho do arquivo R1.");
+    if (ingestMode === 'bam' && !fileBam)
+      return alert("Selecione o arquivo BAM antes de processar!");
 
     setIsUploading(true);
     setUploadProgress(0);
 
     const data = new FormData();
-    data.append('files', fileR1);
-    data.append('files', fileR2);
     data.append('patientId', formData.patientId);
     data.append('doctor', formData.doctor);
     data.append('protocol', formData.protocol);
     data.append('sex', sex);
     data.append('config', JSON.stringify(pipelineConfig));
-
     data.append('ref_genome', refGenomeVersion);
     if (targetBedVersion !== 'none') data.append('target_bed', targetBedVersion);
     if (ponFileVersion   !== 'none') data.append('pon_file',   ponFileVersion);
 
+    if (ingestMode === 'upload') {
+      data.append('files', fileR1);
+      data.append('files', fileR2);
+    } else if (ingestMode === 'bam') {
+      data.append('bam_file', fileBam);
+    } else {
+      data.append('fastq_r1_path', pathR1.trim());
+      if (pathR2.trim()) data.append('fastq_r2_path', pathR2.trim());
+    }
+
     try {
-      const responseData = await api.uploadAnalysis(data, setUploadProgress);
+      const responseData = await api.uploadAnalysis(data, ingestMode === 'upload' ? setUploadProgress : null);
 
       setFormData({ patientId: '', doctor: '', protocol: '' });
       setFileR1(null);
       setFileR2(null);
+      setFileBam(null);
       setSex('');
 
-      navigate('/monitor', { state: { activeUuid: responseData.uuid } });
+      navigate(`/monitor/${responseData.uuid}`);
 
     } catch (error) {
       alert("Erro de rede. Falha ao enviar os arquivos.");
@@ -81,48 +102,46 @@ export default function UploadForm() {
     }
   };
 
-  const inputClass = "w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-200 disabled:bg-slate-50 disabled:text-slate-400 transition-colors";
-  const selectClass = `${inputClass} bg-white`;
-  const fileInputClass = "w-full border border-slate-200 rounded-lg text-sm cursor-pointer bg-slate-50 hover:bg-slate-100 transition-colors disabled:opacity-50 file:mr-4 file:py-3 file:px-5 file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100";
-  // fileInputClass mantido para os inputs FASTQ R1/R2
+  const inputClass = "w-full border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-slate-500 focus:ring-0 disabled:bg-slate-50 disabled:text-slate-400 transition-colors bg-white";
+  const selectClass = `${inputClass}`;
+  const fileInputClass = "w-full border border-slate-300 text-sm cursor-pointer bg-slate-50 hover:bg-slate-100 transition-colors disabled:opacity-50 file:mr-4 file:py-3 file:px-5 file:border-0 file:border-r file:border-slate-300 file:text-sm file:font-semibold file:bg-white file:text-slate-600 hover:file:bg-slate-50";
 
   return (
-    <div className="w-full space-y-6">
+    <div className="w-full pb-10">
 
-      {/* Título — solto sobre o fundo cinza */}
-      <div>
-        <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-          <Upload size={20} className="text-violet-700" />
-          Configuração da Pipeline Clínica
-        </h3>
-        <p className="text-sm text-slate-500 mt-1">Preencha os dados da amostra e selecione os arquivos FASTQ para iniciar o processamento.</p>
+      {/* Título */}
+      <div className="border-b border-slate-300 pb-3 mb-0">
+        <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Nova Análise</h2>
+        <p className="text-sm text-slate-500 mt-0.5">Configure os parâmetros da amostra e inicie o processamento genômico.</p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit}>
 
         {!isDockerOnline && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3 text-red-700">
-            <AlertTriangle size={20} className="mt-0.5 shrink-0" />
+          <div className="p-4 bg-red-50 border-b border-red-300 flex items-start gap-3 text-red-700">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0" />
             <div>
-              <h4 className="font-bold text-sm">Atenção: Infraestrutura Indisponível</h4>
-              <p className="text-xs mt-1">O motor do Docker/WSL2 não está respondendo. Inicie o Docker Desktop.</p>
+              <p className="font-bold text-sm uppercase tracking-wide">Infraestrutura Indisponível</p>
+              <p className="text-xs mt-0.5 text-red-600">O motor do Docker/WSL2 não está respondendo. Inicie o Docker Desktop.</p>
             </div>
           </div>
         )}
 
         {/* Seção 1 — Dados do Paciente */}
-        <div className="bg-white border border-slate-200 rounded-md p-6 shadow-sm">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">1. Dados do Paciente</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div className="bg-white border-b border-slate-200">
+          <div className="px-6 py-3 border-b border-slate-100">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">1. Dados do Paciente</p>
+          </div>
+          <div className="px-6 py-5 grid grid-cols-1 md:grid-cols-2 gap-5">
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600">ID do Paciente</label>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ID do Paciente</label>
               <input type="text" name="patientId" required value={formData.patientId}
                 onChange={handleInputChange} disabled={!isDockerOnline || isUploading}
                 placeholder="Ex: PAC-2026-001"
                 className={inputClass} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600">Sexo</label>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Sexo</label>
               <select required value={sex} onChange={(e) => setSex(e.target.value)}
                 disabled={!isDockerOnline || isUploading}
                 className={selectClass}>
@@ -135,18 +154,20 @@ export default function UploadForm() {
         </div>
 
         {/* Seção 2 — Metadados Clínicos */}
-        <div className="bg-white border border-slate-200 rounded-md p-6 shadow-sm">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">2. Metadados Clínicos</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div className="bg-white border-b border-slate-200">
+          <div className="px-6 py-3 border-b border-slate-100">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">2. Metadados Clínicos</p>
+          </div>
+          <div className="px-6 py-5 grid grid-cols-1 md:grid-cols-2 gap-5">
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600">Médico Solicitante</label>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Médico Solicitante</label>
               <input type="text" name="doctor" required value={formData.doctor}
                 onChange={handleInputChange} disabled={!isDockerOnline || isUploading}
                 placeholder="Ex: Dr. Silva"
                 className={inputClass} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600">Painel</label>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Painel</label>
               <select name="protocol" required value={formData.protocol}
                 onChange={handleInputChange} disabled={!isDockerOnline || isUploading}
                 className={selectClass}>
@@ -156,189 +177,196 @@ export default function UploadForm() {
           </div>
         </div>
 
-        {/* Seção 3 — Dados Brutos (FASTQ) */}
-        <div className="bg-white border border-slate-200 rounded-md p-6 shadow-sm">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">3. Arquivos de Sequenciamento (Paired-End)</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600">
-                Arquivo R1 <span className="text-slate-400 font-normal">(Forward / Read 1)</span>
-              </label>
-              <input type="file" accept=".fastq,.fastq.gz,.fq,.fq.gz" required
-                onChange={(e) => setFileR1(e.target.files[0] || null)}
-                disabled={!isDockerOnline || isUploading}
-                className={fileInputClass} />
-              {fileR1 && <p className="text-xs text-violet-600 font-medium truncate">{fileR1.name}</p>}
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600">
-                Arquivo R2 <span className="text-slate-400 font-normal">(Reverse / Read 2)</span>
-              </label>
-              <input type="file" accept=".fastq,.fastq.gz,.fq,.fq.gz" required
-                onChange={(e) => setFileR2(e.target.files[0] || null)}
-                disabled={!isDockerOnline || isUploading}
-                className={fileInputClass} />
-              {fileR2 && <p className="text-xs text-violet-600 font-medium truncate">{fileR2.name}</p>}
+        {/* Seção 3 — Arquivos de Sequenciamento */}
+        <div className="bg-white border-b border-slate-200">
+          <div className="px-6 py-3 border-b border-slate-100 flex items-center justify-between">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">3. Arquivos de Sequenciamento</p>
+            <div className="flex border border-slate-300 overflow-hidden text-xs font-semibold">
+              {[
+                { key: 'upload', label: 'Upload FASTQ' },
+                { key: 'bam',    label: 'Upload BAM' },
+                { key: 'path',   label: 'Caminho Local' },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setIngestMode(key)}
+                  disabled={isUploading}
+                  className={`px-3 py-1.5 transition-colors border-r border-slate-300 last:border-r-0 ${
+                    ingestMode === key
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-white text-slate-500 hover:bg-slate-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
-        </div>
 
-        {/* Seção 5 — Arquivos de Referência Customizados */}
-        <div className="bg-white border border-slate-200 rounded-md p-6 shadow-sm">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">5. Arquivos de Referência</p>
-          <div className="grid grid-cols-1 gap-5">
-
-            {/* Genoma de Referência */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600 flex items-center gap-1.5">
-                <FolderOpen size={14} className="text-slate-400" />
-                Genoma de Referência
-              </label>
-              <select
-                value={refGenomeVersion}
-                onChange={(e) => setRefGenomeVersion(e.target.value)}
-                disabled={isUploading}
-                className="w-full bg-white border border-slate-300 rounded-md p-2 text-sm text-slate-700 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-200 disabled:opacity-50 transition-colors"
-              >
-                <option value="hg38">Homo sapiens - GRCh38 / hg38 (Padrão)</option>
-                <option value="hg19" disabled>Homo sapiens - GRCh37 / hg19 (Requer indexação prévia)</option>
-              </select>
-            </div>
-
-            {/* Painel Alvo (BED) */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600 flex items-center gap-1.5">
-                <FolderOpen size={14} className="text-slate-400" />
-                Painel Alvo
-                <span className="text-slate-400 font-normal">(BED)</span>
-              </label>
-              <select
-                value={targetBedVersion}
-                onChange={(e) => setTargetBedVersion(e.target.value)}
-                disabled={isUploading}
-                className="w-full bg-white border border-slate-300 rounded-md p-2 text-sm text-slate-700 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-200 disabled:opacity-50 transition-colors"
-              >
-                <option value="twist">Painel Twist Bioscience (Padrão)</option>
-                <option value="none">Nenhum (Whole Genome / Exoma)</option>
-              </select>
-            </div>
-
-            {/* Panel of Normals (PoN) */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-600 flex items-center gap-1.5">
-                <FolderOpen size={14} className="text-slate-400" />
-                Panel of Normals
-                <span className="text-slate-400 font-normal">(PoN)</span>
-              </label>
-              <select
-                value={ponFileVersion}
-                onChange={(e) => setPonFileVersion(e.target.value)}
-                disabled={isUploading}
-                className="w-full bg-white border border-slate-300 rounded-md p-2 text-sm text-slate-700 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-200 disabled:opacity-50 transition-colors"
-              >
-                <option value="gatk_1000g">GATK 1000 Genomes (Padrão)</option>
-                <option value="none">Nenhum (Sem filtro de artefatos)</option>
-              </select>
-            </div>
-
-          </div>
-        </div>
-
-        {/* Seção 4 — Configuração Avançada da Pipeline */}
-        <div className="bg-white border border-slate-200 rounded-md p-6 shadow-sm">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">4. Parâmetros da Pipeline</p>
-
-          {/* Toggle: Modo de Processamento */}
-          <div className="flex items-center justify-between p-4 rounded-lg border border-slate-200 bg-slate-50">
-            <div className="flex items-center gap-3">
-              <SlidersHorizontal size={18} className="text-slate-400" />
-              <div>
-                <p className="text-sm font-semibold text-slate-700">Modo de Processamento</p>
-                {!isCustomConfig ? (
-                  <p className="text-xs font-medium text-emerald-600 flex items-center gap-1 mt-0.5">
-                    <CheckCircle2 size={12} /> Padrão Clínico GDC (Recomendado)
-                  </p>
-                ) : (
-                  <p className="text-xs font-medium text-slate-500 mt-0.5">Configuração Customizada</p>
-                )}
+          <div className="px-6 py-5 space-y-4">
+            {ingestMode === 'bam' ? (
+              <div className="space-y-4">
+                <div className="bg-blue-50 border border-blue-200 px-4 py-2.5 text-xs text-blue-800">
+                  <strong>Modo BAM:</strong> envie um arquivo <code>.bam</code> pré-alinhado. O pipeline irá ordenar,
+                  indexar e prosseguir diretamente para a chamada de variantes (Mutect2 + VarScan2 + LoFreq).
+                  O BAM deve ter sido alinhado ao mesmo genoma de referência selecionado abaixo.
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Arquivo BAM <span className="text-red-500">*</span></label>
+                  <input type="file" accept=".bam"
+                    onChange={(e) => setFileBam(e.target.files[0] || null)}
+                    disabled={!isDockerOnline || isUploading}
+                    className={fileInputClass} />
+                  {fileBam && <p className="text-xs text-slate-600 font-mono font-medium truncate">{fileBam.name}</p>}
+                </div>
               </div>
-            </div>
-
-            {/* Switch */}
-            <button
-              type="button"
-              onClick={() => setIsCustomConfig(v => !v)}
-              disabled={isUploading}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-40
-                ${isCustomConfig ? 'bg-slate-400' : 'bg-emerald-500'}`}
-              aria-pressed={isCustomConfig}
-            >
-              <span
-                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition-transform duration-200
-                  ${isCustomConfig ? 'translate-x-5' : 'translate-x-0'}`}
-              />
-            </button>
-          </div>
-
-          {/* Painel expandido — só visível no modo customizado */}
-          {isCustomConfig && (
-            <div className="mt-3 p-5 rounded-md border border-slate-200 bg-slate-50 space-y-5">
-
+            ) : ingestMode === 'upload' ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-slate-700">
-                    VAF Mínimo{' '}
-                    <span className="text-slate-400 font-normal">(Variant Allele Frequency)</span>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    Arquivo R1 <span className="normal-case font-normal">(Forward / Read 1)</span>
                   </label>
-                  <input
-                    type="number"
-                    min="0.01" max="0.50" step="0.01"
-                    value={pipelineConfig.vaf}
-                    onChange={(e) => setPipelineConfig(prev => ({ ...prev, vaf: parseFloat(e.target.value) || 0.05 }))}
-                    disabled={isUploading}
-                    className={inputClass}
-                  />
-                  <p className="text-xs text-slate-400">Padrão GDC: <span className="font-mono font-semibold">0.05</span> (5%)</p>
+                  <input type="file" accept=".fastq,.fastq.gz,.fq,.fq.gz"
+                    onChange={(e) => setFileR1(e.target.files[0] || null)}
+                    disabled={!isDockerOnline || isUploading}
+                    className={fileInputClass} />
+                  {fileR1 && <p className="text-xs text-slate-600 font-mono font-medium truncate">{fileR1.name}</p>}
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-slate-700">
-                    Profundidade Mínima{' '}
-                    <span className="text-slate-400 font-normal">(Min DP)</span>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    Arquivo R2 <span className="normal-case font-normal">(Reverse / Read 2)</span>
                   </label>
-                  <input
-                    type="number"
-                    min="1" max="10000" step="1"
-                    value={pipelineConfig.minDp}
-                    onChange={(e) => setPipelineConfig(prev => ({ ...prev, minDp: parseInt(e.target.value, 10) || 100 }))}
-                    disabled={isUploading}
-                    className={inputClass}
-                  />
-                  <p className="text-xs text-slate-400">Padrão GDC: <span className="font-mono font-semibold">100×</span></p>
+                  <input type="file" accept=".fastq,.fastq.gz,.fq,.fq.gz"
+                    onChange={(e) => setFileR2(e.target.files[0] || null)}
+                    disabled={!isDockerOnline || isUploading}
+                    className={fileInputClass} />
+                  {fileR2 && <p className="text-xs text-slate-600 font-mono font-medium truncate">{fileR2.name}</p>}
                 </div>
               </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="bg-slate-50 border border-slate-200 px-4 py-2.5 text-xs text-slate-600">
+                  <strong>Modo Caminho Local:</strong> informe o caminho absoluto dos FASTQs já presentes no disco.
+                  O backend criará um hardlink instantâneo (sem copiar) se os arquivos estiverem no WSL2,
+                  ou copiará automaticamente se estiverem em um drive Windows.
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    Caminho R1 <span className="normal-case font-normal">(obrigatório)</span>
+                  </label>
+                  <input type="text" value={pathR1} onChange={(e) => setPathR1(e.target.value)}
+                    disabled={!isDockerOnline || isUploading}
+                    placeholder="Ex: /home/ubuntu/data/HCC1395_R1.fastq.gz"
+                    className={inputClass} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    Caminho R2 <span className="normal-case font-normal">(opcional para Single-End)</span>
+                  </label>
+                  <input type="text" value={pathR2} onChange={(e) => setPathR2(e.target.value)}
+                    disabled={!isDockerOnline || isUploading}
+                    placeholder="Ex: /home/ubuntu/data/HCC1395_R2.fastq.gz"
+                    className={inputClass} />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Seção 4 — Arquivos de Referência */}
+        <div className="bg-white border-b border-slate-200">
+          <div className="px-6 py-3 border-b border-slate-100">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">4. Arquivos de Referência</p>
+          </div>
+          <div className="px-6 py-5 grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                <FolderOpen size={12} />
+                Genoma de Referência
+              </label>
+              <select value={refGenomeVersion} onChange={(e) => setRefGenomeVersion(e.target.value)}
+                disabled={isUploading} className={selectClass}>
+                <option value="hg38">GRCh38 / hg38 (Padrão)</option>
+                <option value="hg19">GRCh37 / hg19</option>
+              </select>
             </div>
-          )}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                <FolderOpen size={12} />
+                Painel Alvo (BED)
+              </label>
+              <select value={targetBedVersion} onChange={(e) => setTargetBedVersion(e.target.value)}
+                disabled={isUploading} className={selectClass}>
+                <option value="twist">Twist Bioscience (Illumina)</option>
+                <option value="oncomine">Oncomine Comprehensive Plus v1.5</option>
+                <option value="none">Nenhum (WGS / Exoma)</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                <FolderOpen size={12} />
+                Panel of Normals (PoN)
+              </label>
+              <select value={ponFileVersion} onChange={(e) => setPonFileVersion(e.target.value)}
+                disabled={isUploading} className={selectClass}>
+                <option value="gatk_1000g">GATK 1000 Genomes (Padrão)</option>
+                <option value="none">Nenhum (sem filtro de artefatos)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Seção 5 — Parâmetros da Pipeline */}
+        <div className="bg-white border-b border-slate-200">
+          <div className="px-6 py-3 border-b border-slate-100">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">5. Parâmetros da Pipeline</p>
+          </div>
+          <div className="px-6 py-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                VAF Mínimo <span className="normal-case font-normal">(Variant Allele Frequency)</span>
+              </label>
+              <input type="number" min="0.01" max="0.50" step="0.01"
+                value={pipelineConfig.vaf}
+                onChange={(e) => setPipelineConfig(prev => ({ ...prev, vaf: parseFloat(e.target.value) || 0.05 }))}
+                disabled={isUploading} className={inputClass} />
+              <p className="text-xs text-slate-400">Padrão GDC: <span className="font-mono font-semibold">0.05</span> (5%)</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                Profundidade Mínima <span className="normal-case font-normal">(Min DP)</span>
+              </label>
+              <input type="number" min="1" max="10000" step="1"
+                value={pipelineConfig.minDp}
+                onChange={(e) => setPipelineConfig(prev => ({ ...prev, minDp: parseInt(e.target.value, 10) || 100 }))}
+                disabled={isUploading} className={inputClass} />
+              <p className="text-xs text-slate-400">Padrão GDC: <span className="font-mono font-semibold">100×</span></p>
+            </div>
+          </div>
         </div>
 
         {/* Barra de progresso */}
-        {uploadProgress > 0 && uploadProgress < 100 && (
-          <div className="flex items-center gap-3">
-            <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-              <div className="bg-violet-600 h-2 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+        {ingestMode === 'upload' && uploadProgress > 0 && uploadProgress < 100 && (
+          <div className="flex items-center gap-3 px-6 py-3 bg-white border-b border-slate-200">
+            <div className="w-full bg-slate-100 h-1.5 overflow-hidden">
+              <div className="bg-slate-700 h-1.5 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
             </div>
-            <span className="text-xs font-bold text-slate-600 w-10 shrink-0">{uploadProgress}%</span>
+            <span className="text-xs font-bold text-slate-600 w-10 shrink-0 font-mono">{uploadProgress}%</span>
           </div>
         )}
 
         {/* Botão de ação */}
-        <div className="flex justify-end pt-2 border-t border-slate-100">
+        <div className="flex justify-end bg-white px-6 py-4 border-b border-slate-200">
           <button type="submit" disabled={isUploading || !isDockerOnline || !isFormValid}
-            className={`flex items-center gap-2.5 px-8 py-3 rounded-lg font-bold text-white text-sm shadow-sm transition-all
+            className={`flex items-center gap-2.5 px-8 py-2.5 font-bold text-white text-sm transition-colors
               ${isUploading || !isDockerOnline || !isFormValid
                 ? 'bg-slate-300 cursor-not-allowed'
-                : 'bg-violet-700 hover:bg-violet-800 shadow-violet-200 shadow-md'}`}>
-            {isUploading ? <Activity size={16} className="animate-spin" /> : <Play size={16} />}
-            {isUploading ? 'Enviando Amostra...' : 'Iniciar Processamento'}
+                : 'bg-slate-900 hover:bg-slate-700'}`}>
+            {isUploading ? <Activity size={15} className="animate-spin" /> : <Play size={15} />}
+            {isUploading
+              ? (ingestMode === 'path' ? 'Vinculando Arquivos...' : 'Enviando Amostra...')
+              : 'Iniciar Processamento'}
           </button>
         </div>
 
