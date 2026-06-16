@@ -1515,11 +1515,11 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str | None = Non
         if rc_norm_mutect != 0:
             escrever_log_ui(paciente_uuid, f"[AVISO] bcftools norm Mutect2 retornou código {rc_norm_mutect} — usando VCF original.")
 
-        # --- ETAPA 5: CONSENSO MULTI-CALLER (INTERSEÇÃO — AND) ---
-        # Apenas variantes confirmadas pelos 3 callers entram no consenso.
-        # Isso maximiza especificidade clínica eliminando artefatos caller-específicos.
-        # Prioridade de linha no VCF de saída: Mutect2 > VarScan2 > LoFreq (headers GATK/SnpEff).
-        escrever_log_ui(paciente_uuid, "Calculando consenso Multi-Caller (VarScan2 ∩ Mutect2 ∩ LoFreq — Interseção)...")
+        # --- ETAPA 5: CONSENSO MULTI-CALLER (INTERSEÇÃO VarScan2 ∩ Mutect2) ---
+        # Metodologia TCC: consenso restrito aos callers VarScan2 e Mutect2.
+        # LoFreq permanece como caller individual (aba própria nos resultados).
+        # Prioridade de linha no VCF de saída: Mutect2 > VarScan2 (headers GATK/SnpEff).
+        escrever_log_ui(paciente_uuid, "Calculando consenso Multi-Caller (VarScan2 ∩ Mutect2 — Interseção)...")
 
         def _parse_vcf_dict(filepath: Path) -> dict:
             """Lê um VCF e retorna {(CHROM, POS, REF, ALT): linha_completa} — apenas PASS/'.'."""
@@ -1542,7 +1542,6 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str | None = Non
         _varscan_norm = WSL_PROCESSAMENTO / f"{paciente_uuid}_varscan_norm.vcf"
         _mutect_norm  = WSL_PROCESSAMENTO / f"{paciente_uuid}_mutect_norm.vcf"
         _mutect_hf    = WSL_PROCESSAMENTO / f"{paciente_uuid}_mutect_hf.vcf"
-        _lofreq_vcf   = WSL_PROCESSAMENTO / f"{paciente_uuid}_lofreq.vcf"
 
         vcf_varscan_path = _varscan_norm if _vcf_valido(_varscan_norm) else WSL_PROCESSAMENTO / f"{paciente_uuid}_varscan.vcf"
         vcf_mutect_path  = (
@@ -1554,19 +1553,10 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str | None = Non
 
         dict_varscan = _parse_vcf_dict(vcf_varscan_path)
         dict_mutect  = _parse_vcf_dict(vcf_mutect_path)
-        dict_lofreq  = _parse_vcf_dict(_lofreq_vcf) if _vcf_valido(_lofreq_vcf) else {}
 
         set_varscan  = set(dict_varscan.keys())
         set_mutect   = set(dict_mutect.keys())
-        set_lofreq   = set(dict_lofreq.keys())
-
-        # Interseção dos 3 callers — variantes presentes em TODOS são o consenso.
-        # Fallback para 2 callers se o LoFreq não gerou variantes PASS.
-        if set_lofreq:
-            set_consenso = set_varscan & set_mutect & set_lofreq
-        else:
-            set_consenso = set_varscan & set_mutect
-            escrever_log_ui(paciente_uuid, "[AVISO] LoFreq sem variantes PASS — consenso calculado como VarScan2 ∩ Mutect2.")
+        set_consenso = set_varscan & set_mutect
 
         def _chr_sort_key(chave: tuple) -> tuple:
             chrom_raw = chave[0]
@@ -1580,11 +1570,11 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str | None = Non
 
         escrever_log_ui(
             paciente_uuid,
-            f"Consenso (interseção): VarScan2={len(set_varscan)} | Mutect2={len(set_mutect)} | LoFreq={len(set_lofreq)} | Interseção={len(set_consenso)}"
+            f"Consenso (interseção): VarScan2={len(set_varscan)} | Mutect2={len(set_mutect)} | Interseção={len(set_consenso)}"
         )
 
         # Escreve _consensus.vcf com headers do Mutect2 (compatível com SnpEff).
-        # Para interseção, toda variante está nos 3 callers — usa linha do Mutect2 como template.
+        # Para interseção, toda variante está em ambos os callers — prefere linha do Mutect2.
         if variantes_ordenadas:
             try:
                 with open(vcf_mutect_path, "r", encoding="utf-8", errors="replace") as f_hdr, \
@@ -1595,13 +1585,13 @@ def processar_paciente_wsl(paciente_uuid: str, nome_arquivo_r1: str | None = Non
                         else:
                             break
                     for chave in variantes_ordenadas:
-                        linha = dict_mutect.get(chave) or dict_varscan.get(chave) or dict_lofreq.get(chave)
+                        linha = dict_mutect.get(chave) or dict_varscan.get(chave)
                         if linha:
                             f_out.write(linha)
             except (FileNotFoundError, OSError) as e:
                 raise RuntimeError(f"Falha ao escrever VCF de consenso (interseção): {e}") from e
         else:
-            logger.warning(f"[{paciente_uuid}] Interseção vazia — nenhuma variante confirmada pelos 3 callers (VarScan2={len(set_varscan)}, Mutect2={len(set_mutect)}, LoFreq={len(set_lofreq)}).")
+            logger.warning(f"[{paciente_uuid}] Interseção vazia — nenhuma variante confirmada pelos 2 callers (VarScan2={len(set_varscan)}, Mutect2={len(set_mutect)}).")
 
         escrever_log_ui(paciente_uuid, f"Arquivo de consenso gerado: {vcf_consenso_path.name}")
 
