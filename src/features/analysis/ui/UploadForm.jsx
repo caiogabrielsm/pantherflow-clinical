@@ -97,7 +97,13 @@ export default function UploadForm() {
       navigate(`/monitor/${responseData.uuid}`);
 
     } catch (error) {
-      alert("Erro de rede. Falha ao enviar os arquivos.");
+      const detalhe =
+        error?.response?.data?.detail ||
+        error?.response?.data?.message ||
+        error?.message ||
+        'Erro desconhecido';
+      const status = error?.response?.status ? ` (HTTP ${error.response.status})` : '';
+      alert(`Falha ao enviar arquivos${status}:\n\n${detalhe}\n\nVerifique se o WSL2 está ativo e tente novamente.`);
       setIsUploading(false);
     }
   };

@@ -6,6 +6,16 @@ const fs = require('fs');
 
 let mainWindow, splashWindow;
 let backendProcess, viteProcess;
+let logStream = null;
+
+function initLog() {
+  const logsDir = app.getPath('logs');
+  if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+  const logFile = path.join(logsDir, 'backend.log');
+  logStream = fs.createWriteStream(logFile, { flags: 'a' });
+  logStream.write(`\n\n===== PantherFlow iniciado: ${new Date().toISOString()} =====\n`);
+  console.log(`[panther] Log do backend em: ${logFile}`);
+}
 
 // ── Utilitários ───────────────────────────────────────────────────────────────
 
@@ -27,9 +37,21 @@ function waitFor(url, timeoutMs = 60000) {
 
 function spawnLog(cmd, args, opts = {}) {
   const p = spawn(cmd, args, { windowsHide: true, ...opts });
-  p.stdout?.on('data', (d) => process.stdout.write(String(d)));
-  p.stderr?.on('data', (d) => process.stderr.write(String(d)));
-  p.on('exit', (code) => console.log(`[panther] "${cmd}" encerrou (code=${code})`));
+  p.stdout?.on('data', (d) => {
+    const s = String(d);
+    process.stdout.write(s);
+    logStream?.write(s);
+  });
+  p.stderr?.on('data', (d) => {
+    const s = String(d);
+    process.stderr.write(s);
+    logStream?.write(`[STDERR] ${s}`);
+  });
+  p.on('exit', (code) => {
+    const msg = `[panther] "${cmd}" encerrou (code=${code})\n`;
+    console.log(msg);
+    logStream?.write(msg);
+  });
   return p;
 }
 
@@ -69,6 +91,44 @@ async function startDev() {
   ]);
 }
 
+// ── Acorda o WSL2 antes de qualquer operação que use \\wsl.localhost\ ─────────
+
+function startWsl() {
+  return new Promise((resolve) => {
+    console.log('[panther] Acordando WSL2 e detectando usuário...');
+    const timeout = setTimeout(() => {
+      console.warn('[panther] WSL2 demorou mais de 35s — continuando com user=ubuntu.');
+      resolve('ubuntu');
+    }, 35000);
+
+    // Detecta o usuário real do WSL e cria o diretório de processamento
+    const p = spawn('wsl', ['bash', '-c', 'mkdir -p ~/pantherflow-clinical/processamento && whoami'], {
+      windowsHide: true,
+      shell: false,
+    });
+
+    let wslUser = 'ubuntu';
+    p.stdout?.on('data', (d) => {
+      const line = String(d).trim();
+      if (line) {
+        wslUser = line.split('\n').pop().trim() || wslUser;
+        console.log(`[panther] WSL2 ativo. Usuário detectado: ${wslUser}`);
+      }
+    });
+    p.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) console.warn(`[panther] wsl bash retornou code=${code}.`);
+      // Aguarda 2s para o UNC path \\wsl.localhost\ ficar acessível
+      setTimeout(() => resolve(wslUser), 2000);
+    });
+    p.on('error', (err) => {
+      clearTimeout(timeout);
+      console.warn(`[panther] Não foi possível iniciar WSL2: ${err.message}`);
+      resolve('ubuntu');
+    });
+  });
+}
+
 // ── Inicialização em modo PRODUÇÃO (app empacotado) ───────────────────────────
 
 async function startProd() {
@@ -80,8 +140,24 @@ async function startProd() {
     return;
   }
 
+  const wslUser = await startWsl();
+
+  // Garante que docker.exe está no PATH do processo backend.
+  // O Docker Desktop instala o CLI em locais fora do PATH padrão do Electron.
+  const backendEnv = { ...process.env };
+  backendEnv.WSL_USER = wslUser;  // passa o usuário real do WSL para o backend
+  const dockerExtraPaths = [
+    'C:\\Program Files\\Docker\\Docker\\resources\\bin',
+    'C:\\ProgramData\\DockerDesktop\\version-bin',
+    'C:\\Program Files\\Docker\\resources\\bin',
+  ];
+  backendEnv.PATH = [
+    backendEnv.PATH,
+    ...dockerExtraPaths,
+  ].filter(Boolean).join(require('path').delimiter);
+
   console.log('[panther] Iniciando backend (produção)...');
-  backendProcess = spawnLog(backendExe, [], { cwd: backendCwd });
+  backendProcess = spawnLog(backendExe, [], { cwd: backendCwd, env: backendEnv });
 
   await waitFor('http://localhost:8000/api/health', 60000).catch(() =>
     console.warn('[panther] Backend demorou mais que 60s')
@@ -111,11 +187,18 @@ height:100vh;font-family:system-ui,sans-serif;color:white;user-select:none;">
   <div style="width:220px;height:3px;background:#1e293b;border-radius:99px;overflow:hidden">
     <div id="b" style="width:15%;height:100%;background:#6366f1;border-radius:99px;
       transition:width .5s ease"></div></div>
-  <div style="font-size:11px;color:#475569;margin-top:14px">Iniciando serviços...</div>
+  <div id="msg" style="font-size:11px;color:#475569;margin-top:14px">Iniciando WSL2...</div>
   <script>
     let w=15;
-    setInterval(()=>{w=Math.min(w+Math.random()*7,88);
-    document.getElementById('b').style.width=w+'%'},700);
+    const msgs=['Iniciando WSL2...','Carregando backend...','Conectando serviços...','Quase lá...'];
+    let mi=0;
+    setInterval(()=>{
+      w=Math.min(w+Math.random()*7,88);
+      document.getElementById('b').style.width=w+'%';
+      if(w>30&&mi<1){mi=1;document.getElementById('msg').textContent=msgs[1];}
+      if(w>55&&mi<2){mi=2;document.getElementById('msg').textContent=msgs[2];}
+      if(w>78&&mi<3){mi=3;document.getElementById('msg').textContent=msgs[3];}
+    },700);
   </script>
 </body></html>`;
 
@@ -159,6 +242,7 @@ function createMainWindow() {
 // ── Ciclo de vida do app ──────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  initLog();
   createSplash();
 
   if (app.isPackaged) {

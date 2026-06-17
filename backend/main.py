@@ -4,6 +4,7 @@ load_dotenv()  # Carrega backend/.env antes de qualquer import que use os.getenv
 from fastapi.responses import FileResponse
 import hashlib
 import json
+import sys
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,9 +28,17 @@ import models
 from pipeline import processar_paciente_wsl, WSL_PROCESSAMENTO, WSL_BASE, AUDITORIA_DIR
 
 # --- CONFIGURAÇÃO DE LOGS ---
+# Em modo empacotado, o cwd é C:\Program Files\ (somente-leitura) — usa %APPDATA%.
+def _log_path() -> str:
+    if getattr(sys, 'frozen', False):
+        log_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'pantherflow-clinical')
+        os.makedirs(log_dir, exist_ok=True)
+        return os.path.join(log_dir, 'pantherflow.log')
+    return 'pantherflow.log'
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
-                    handlers=[logging.FileHandler("pantherflow.log", encoding="utf-8"),
-                              logging.StreamHandler(stream=open(__import__("sys").stdout.fileno(), mode="w", encoding="utf-8", closefd=False))])
+                    handlers=[logging.FileHandler(_log_path(), encoding="utf-8"),
+                              logging.StreamHandler(stream=open(sys.stdout.fileno(), mode="w", encoding="utf-8", closefd=False))])
 logger = logging.getLogger(__name__)
 
 # Cria as tabelas no banco de dados (se não existirem)
@@ -97,15 +106,19 @@ def get_system_health():
 def check_docker_health():
     """Verifica se o motor do Docker/WSL2 está respondendo"""
     try:
-        # Tenta executar um comando básico silenciosamente
-        subprocess.run(
-            ["docker", "info"], 
-            capture_output=True, 
-            text=True, 
-            check=True
+        result = subprocess.run(
+            "docker info",
+            capture_output=True,
+            text=True,
+            timeout=15,
+            shell=True  # shell=True usa cmd.exe que resolve o PATH completo do sistema
         )
-        return {"status": "online", "message": "Docker engine ativo."}
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Docker Desktop às vezes retorna exit code != 0 mesmo funcionando.
+        # Considera online se o stdout contém informação do servidor.
+        if "Server Version" in result.stdout or result.returncode == 0:
+            return {"status": "online", "message": "Docker engine ativo."}
+        return {"status": "offline", "message": "Docker indisponível."}
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return {"status": "offline", "message": "Docker indisponível."}
 
 
@@ -236,6 +249,15 @@ async def start_analysis(
             if len(files) > 2:
                 raise HTTPException(status_code=400, detail="Envie no máximo 2 arquivos (R1 e R2).")
 
+            if not WSL_PROCESSAMENTO.exists():
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"Diretório WSL2 inacessível: {WSL_PROCESSAMENTO}. "
+                        "Certifique-se de que o WSL2 está ativo (abra o Ubuntu no menu Iniciar) e tente novamente."
+                    )
+                )
+
             nomes_salvos: dict[str, str] = {}
             md5_hashes:   dict[str, str] = {}
 
@@ -258,10 +280,16 @@ async def start_analysis(
 
                 logger.info("[%s] Salvando %s (%s)...", id_anonimo, tag, novo_nome)
                 md5_hash = hashlib.md5()
-                with open(caminho_wsl, "wb") as buffer:
-                    while chunk := await upload.read(8192 * 1024):
-                        buffer.write(chunk)
-                        md5_hash.update(chunk)
+                try:
+                    with open(caminho_wsl, "wb") as buffer:
+                        while chunk := await upload.read(8192 * 1024):
+                            buffer.write(chunk)
+                            md5_hash.update(chunk)
+                except OSError as e:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Falha ao salvar {tag} no WSL2 ({caminho_wsl}): {e}"
+                    ) from e
 
                 nomes_salvos[tag] = novo_nome
                 md5_hashes[tag]   = md5_hash.hexdigest()
@@ -290,12 +318,27 @@ async def start_analysis(
             nome_bam = f"{id_anonimo}_input.bam"
             caminho_wsl_bam = WSL_PROCESSAMENTO / nome_bam
 
+            if not WSL_PROCESSAMENTO.exists():
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"Diretório WSL2 inacessível: {WSL_PROCESSAMENTO}. "
+                        "Certifique-se de que o WSL2 está ativo (abra o Ubuntu no menu Iniciar) e tente novamente."
+                    )
+                )
+
             logger.info("[%s] Salvando BAM (%s)...", id_anonimo, nome_bam)
             md5_hash = hashlib.md5()
-            with open(caminho_wsl_bam, "wb") as buffer:
-                while chunk := await bam_file.read(8192 * 1024):
-                    buffer.write(chunk)
-                    md5_hash.update(chunk)
+            try:
+                with open(caminho_wsl_bam, "wb") as buffer:
+                    while chunk := await bam_file.read(8192 * 1024):
+                        buffer.write(chunk)
+                        md5_hash.update(chunk)
+            except OSError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Falha ao salvar BAM no WSL2 ({caminho_wsl_bam}): {e}"
+                ) from e
 
             new_entry.md5_checksum = md5_hash.hexdigest()
             db.commit()

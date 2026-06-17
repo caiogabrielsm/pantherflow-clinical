@@ -2,6 +2,7 @@ from pathlib import Path
 import logging
 import subprocess
 import os
+import sys
 import shlex
 import re
 import shutil
@@ -23,10 +24,16 @@ WSL_BASE = f"/home/{WSL_USER}/pantherflow-clinical"
 WSL_PROCESSAMENTO = Path(rf"\\wsl.localhost\Ubuntu{WSL_BASE}\processamento")
 WSL_DATASETS      = Path(rf"\\wsl.localhost\Ubuntu{WSL_BASE}\datasets")
 
-# Diretório seguro para VCFs de auditoria — fora do WSL_PROCESSAMENTO para não ser
-# varrido pelo DELETE /api/analysis/{id} (que apaga glob(uuid*)  em WSL_PROCESSAMENTO).
-# Os arquivos aqui persistem para a rota /api/auditoria/concordancia.
-AUDITORIA_DIR = Path(__file__).resolve().parent / "data" / "auditoria"
+# Em modo empacotado (PyInstaller), C:\Program Files\ é somente-leitura.
+# Dados escritos em runtime vão para %APPDATA%\pantherflow-clinical\.
+_IS_FROZEN = getattr(sys, 'frozen', False)
+_APPDATA_DIR = (
+    Path(os.environ.get('APPDATA', str(Path.home()))) / 'pantherflow-clinical'
+    if _IS_FROZEN
+    else Path(__file__).resolve().parent
+)
+
+AUDITORIA_DIR = _APPDATA_DIR / "data" / "auditoria"
 AUDITORIA_DIR.mkdir(parents=True, exist_ok=True)
 _MANIFESTO_PATH = Path(__file__).resolve().parent / "config" / "manifesto_benchmarking.json"
 _BED_TWIST = (

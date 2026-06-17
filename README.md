@@ -58,23 +58,24 @@ FASTQ (R1 + R2)
 
 ## 2. Requisitos de Sistema
 
-> ⚠️ Estes são os requisitos **reais** testados com o pipeline. Valores abaixo do mínimo causam travamentos ou falhas silenciosas no Mutect2 e LoFreq.
+> ⚠️ Estes são os requisitos **reais** medidos em execuções clínicas com o pipeline completo. Valores abaixo do mínimo causam travamentos ou encerramento silencioso do Mutect2 e LoFreq.
 
 | Recurso | **Mínimo absoluto** | **Recomendado** |
 |---|---|---|
 | Windows | 10 v2004 (Build 19041) ou Win 11 | Windows 11 |
-| RAM | **32 GB** | 64 GB |
+| RAM | **64 GB** | 128 GB |
 | CPU | 8 núcleos físicos | 16+ núcleos |
 | Disco livre | **300 GB** | 500 GB+ |
 | WSL2 + Ubuntu | 22.04 | 24.04 |
 | Docker Desktop | 4.x | última versão |
 
-**Por que 32 GB?**
-- BWA-MEM carrega o índice hg38 (~8 GB) em memória
-- Mutect2 aloca 8–16 GB de heap Java em amostras WES
-- LoFreq + VarScan2 + snpEff rodam em paralelo ou em sequência com o sistema operacional ativo
+**Por que 64 GB?**
+- BWA-MEM carrega o índice hg38 (~8 GB) em memória durante o alinhamento
+- Mutect2 aloca 8–16 GB de heap Java em amostras de painel; mais em WES
+- LoFreq + VarScan2 + snpEff rodam em sequência com o SO ativo
+- Monitoramento real durante análises de painel oncológico (Twist/IonCode) indicou picos de **~50 GB de RAM** com o pipeline completo rodando
 
-Com 16 GB, o Mutect2 pode terminar em amostras de painel pequeno, mas vai travar ou ser encerrado pelo SO em WES.
+Com 32 GB, o Mutect2 pode completar em painéis pequenos, mas trava ou é encerrado pelo SO em WES ou amostras com alta cobertura.
 
 ---
 
@@ -265,6 +266,10 @@ Salve o arquivo BED em:
 
 ## 4. Configuração do Arquivo `.env`
 
+> **Versão instalada (.exe):** o PantherFlow detecta o usuário WSL2 automaticamente — esta etapa não é necessária.
+>
+> **Modo desenvolvedor:** necessário para o backend encontrar os arquivos no WSL2.
+
 Na pasta `backend/` do projeto, crie um arquivo chamado `.env`:
 
 ```
@@ -277,7 +282,13 @@ Conteúdo:
 WSL_USER=seu_usuario_ubuntu
 ```
 
-Substitua `seu_usuario_ubuntu` pelo nome criado na etapa 3.1. Exemplo:
+Substitua `seu_usuario_ubuntu` pelo nome criado na etapa 3.1. Para saber qual é o seu usuário:
+
+```powershell
+wsl whoami
+```
+
+Exemplo:
 
 ```env
 WSL_USER=joao
@@ -291,13 +302,16 @@ WSL_USER=joao
 
 ### Pré-condição obrigatória
 
-O **Docker Desktop** precisa estar aberto e rodando (ícone verde na bandeja do sistema) antes de iniciar o PantherFlow.
+O **Docker Desktop** precisa estar aberto e rodando (ícone na bandeja do sistema) antes de iniciar o PantherFlow.
+
+> O WSL2/Ubuntu **não** precisa ser aberto manualmente — o PantherFlow inicia o WSL2 e cria os diretórios necessários automaticamente ao abrir.
 
 ### Versão instalada (instalador .exe)
 
-Dê **duplo clique** no ícone do PantherFlow Clinical na área de trabalho.
+1. Abra o **Docker Desktop** e aguarde o daemon inicializar (~30s)
+2. Dê **duplo clique** no ícone do PantherFlow Clinical na área de trabalho
 
-A tela de splash aparece enquanto o motor inicializa (~5–15 segundos).
+A tela de splash aparece enquanto o motor inicializa (~10–20 segundos na primeira abertura após o boot).
 
 ### Versão de desenvolvimento
 
@@ -406,12 +420,18 @@ Necessário para o electron-builder criar symlinks durante o empacotamento:
 
 ### Passo 1 — Empacotar backend com PyInstaller
 
-```bash
+```powershell
 cd backend
-venv\Scripts\activate
-pip install pyinstaller
+.\venv\Scripts\Activate.ps1
 
-pyinstaller main.spec --distpath dist-pyinstaller --workpath build-pyinstaller --clean
+pyinstaller main.spec --clean --noconfirm
+```
+
+Em seguida, copie o resultado para o diretório esperado pelo electron-builder:
+
+```powershell
+cd ..
+Copy-Item -Recurse -Force backend\dist\main backend\dist-pyinstaller\main
 ```
 
 Resultado: `backend/dist-pyinstaller/main/main.exe`
@@ -512,8 +532,8 @@ Instalador gerado em: `release\PantherFlow Clinical Setup 1.0.0.exe`
 ### Mutect2 termina com erro de memória
 
 - A VM da JVM precisa de mais RAM do que disponível
-- Solução: feche outros programas e certifique-se de ter **32 GB livres** antes de iniciar
-- Alternativa: desative temporariamente o LoFreq (amostra menor)
+- Solução: feche outros programas e certifique-se de ter **64 GB livres** antes de iniciar
+- O pipeline consome picos de ~50 GB; em máquinas com menos RAM o SO pode encerrar o processo silenciosamente
 
 ### "WSL_PROCESSAMENTO não encontrado"
 
@@ -526,8 +546,9 @@ Confira se `WSL_USER` no `.env` corresponde ao seu usuário Ubuntu.
 
 ### Tela em branco ao abrir o software
 
-- Aguarde mais 15 segundos (backend ainda inicializando)
-- Verifique `backend\pantherflow.log` para erros de startup
+- Aguarde mais 15–30 segundos (backend ainda inicializando, especialmente na primeira abertura)
+- Versão instalada: verifique o log em `%APPDATA%\pantherflow-clinical\logs\backend.log`
+- Versão dev: verifique `backend\pantherflow.log`
 - Em modo dev, confirme que `npm run electron:dev` foi executado na raiz do projeto
 
 ### Imagem Docker não encontrada (pantherflow-bioinfo)

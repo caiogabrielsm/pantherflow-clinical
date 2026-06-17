@@ -1,10 +1,20 @@
 import os
+import sys
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # --- CONFIGURAÇÃO DO BANCO DE DADOS (SQLite) ---
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(_BASE_DIR, 'pantherflow.db')}"
+# Em modo empacotado (PyInstaller), __file__ aponta para C:\Program Files\ (somente-leitura).
+# Usa %APPDATA% para garantir que o banco seja gravável sem privilégios de administrador.
+def _db_path() -> str:
+    if getattr(sys, 'frozen', False):
+        appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
+        db_dir = os.path.join(appdata, 'pantherflow-clinical')
+        os.makedirs(db_dir, exist_ok=True)
+        return os.path.join(db_dir, 'pantherflow.db')
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pantherflow.db')
+
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{_db_path()}"
 
 # O engine é o motor que realmente conversa com o arquivo .db
 engine = create_engine(
